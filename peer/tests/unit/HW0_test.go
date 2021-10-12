@@ -81,7 +81,6 @@ func Test_HW0_Network_Simple(t *testing.T) {
 	require.NoError(t, err)
 
 	require.EqualValues(t, pkt, res)
-
 	// > n2 send to n1
 
 	pkt = z.GetRandomPkt(t)
@@ -95,15 +94,12 @@ func Test_HW0_Network_Simple(t *testing.T) {
 	require.EqualValues(t, pkt, res)
 
 	// > n1 send to n1
-
 	pkt = z.GetRandomPkt(t)
 
 	err = sock1.Send(sock1.GetAddress(), pkt, 0)
 	require.NoError(t, err)
-
 	res, err = sock1.Recv(time.Second)
 	require.NoError(t, err)
-
 	require.EqualValues(t, pkt, res)
 }
 
@@ -356,7 +352,7 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 	// test case with a provided transport
 	getTest := func(transp transport.Transport) func(*testing.T) {
 		return func(t *testing.T) {
-			t.Parallel()
+			//t.Parallel()
 
 			fake := z.NewFakeMessage(t)
 			handler, status := fake.GetHandler(t)
@@ -474,7 +470,7 @@ func Test_HW0_Messaging_Relaying(t *testing.T) {
 	// test case with a provided transport
 	getTest := func(transp transport.Transport) func(*testing.T) {
 		return func(t *testing.T) {
-			//t.Parallel()
+			t.Parallel()
 
 			fake := z.NewFakeMessage(t)
 			handler, status := fake.GetHandler(t)
@@ -571,6 +567,6 @@ func Test_HW0_Messaging_Relaying(t *testing.T) {
 		}
 	}
 
-	//t.Run("channel transport", getTest(channelFac()))
+	t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
