@@ -451,12 +451,10 @@ func Test_HW0_Messaging_Unicast_Fail(t *testing.T) {
 			require.Error(t, err)
 
 			time.Sleep(time.Second)
-
 			n1Ins := node1.GetIns()
 			n2Ins := node2.GetIns()
 
 			// > n1 should have not received any packet
-
 			require.Len(t, n1Ins, 0)
 
 			// > n2 should have not received any packet
@@ -464,7 +462,6 @@ func Test_HW0_Messaging_Unicast_Fail(t *testing.T) {
 			require.Len(t, n2Ins, 0)
 		}
 	}
-
 	t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
