@@ -175,19 +175,15 @@ func NewTestNode(t *testing.T, f peer.Factory, trans transport.Transport,
 
 	config.Socket = socket
 	config.MessageRegistry = template.registry
-
 	node := f(config)
-
 	require.Equal(t, len(template.messages), len(template.handlers))
 	for i, msg := range template.messages {
 		config.MessageRegistry.RegisterMessageCallback(msg, template.handlers[i])
 	}
-
 	if template.autoStart {
 		err := node.Start()
 		require.NoError(t, err)
 	}
-
 	return TestNode{
 		Peer:   node,
 		config: config,

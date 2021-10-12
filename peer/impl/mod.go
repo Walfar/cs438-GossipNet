@@ -15,7 +15,14 @@ import (
 // NewPeer creates a new peer. You can change the content and location of this
 // function but you MUST NOT change its signature and package location.
 func NewPeer(conf peer.Configuration) peer.Peer {
-	return &node{}
+	n := node{conf: conf, routingTableStruct: routingTableStruct{routingTable: make(peer.RoutingTable)}, stopchan: make(chan struct{})}
+	//init register callback for chat messages
+	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
+	//init routingTable with node's addr
+	n.routingTableStruct.mutex.Lock()
+	n.routingTableStruct.routingTable[n.conf.Socket.GetAddress()] = n.conf.Socket.GetAddress()
+	n.routingTableStruct.mutex.Unlock()
+	return &n
 }
 
 // node implements a peer to build a Peerster system
@@ -25,7 +32,7 @@ type node struct {
 	peer.Peer
 	conf peer.Configuration
 	//channel to know when goroutine should stop
-	stop               chan bool
+	stopchan           chan struct{}
 	routingTableStruct routingTableStruct
 }
 
@@ -47,58 +54,52 @@ func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 
 // Start implements peer.Service
 func (n *node) Start() error {
-	//init register callback for chat messages
-	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
-	//init routingTable with node's addr
-	n.routingTableStruct.mutex.Lock()
-	n.routingTableStruct.routingTable[n.conf.Socket.GetAddress()] = n.conf.Socket.GetAddress()
-	n.routingTableStruct.mutex.Unlock()
-
-	//we use a channel to receive errors from the anonymous goroutine
-	errs := make(chan error, 1)
-
+	var err error
+	errs := make(chan error)
 	go func() {
 		for {
 			select {
-			case <-n.stop:
+			case <-n.stopchan:
+				err = <-errs
 				return
 			default:
-				pkt, err := n.conf.Socket.Recv(time.Second * 1)
-				if errors.Is(err, transport.TimeoutErr(0)) {
+				pkt, err2 := n.conf.Socket.Recv(time.Second * 1)
+				if errors.Is(err2, transport.TimeoutErr(0)) {
 					continue
-				} else if err != nil {
-					errs <- err
-					break
+				}
+				if pkt.Header.Destination == n.conf.Socket.GetAddress() {
+					errs <- n.conf.MessageRegistry.ProcessPacket(pkt)
 				} else {
-					if pkt.Header.Destination == n.conf.Socket.GetAddress() {
-						errs <- n.conf.MessageRegistry.ProcessPacket(pkt)
-					} else {
-						pkt.Header.RelayedBy = n.conf.Socket.GetAddress()
-						errs <- n.conf.Socket.Send(pkt.Header.Destination, pkt, time.Second*1)
-					}
+					pkt.Header.RelayedBy = n.conf.Socket.GetAddress()
+					n.routingTableStruct.mutex.Lock()
+					newDestination := n.routingTableStruct.routingTable[pkt.Header.Destination]
+					n.routingTableStruct.mutex.Unlock()
+					errs <- n.conf.Socket.Send(newDestination, pkt, time.Second*1)
 				}
 			}
 		}
-
 	}()
-
-	if err := <-errs; err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // Stop implements peer.Service
 func (n *node) Stop() error {
-	n.stop <- true
+	close(n.stopchan)
 	return nil
 }
 
 // Unicast implements peer.Messaging
 func (n *node) Unicast(dest string, msg transport.Message) error {
-	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
+	relay, ok := n.routingTableStruct.routingTable[dest]
+	if !ok {
+		return xerrors.Errorf("Unknown address")
+	}
+	header := transport.NewHeader(n.conf.Socket.GetAddress(), relay, dest, 0)
+	header.RelayedBy = n.conf.Socket.GetAddress()
 	pkt := transport.Packet{Header: &header, Msg: &msg}
-	return n.conf.Socket.Send(dest, pkt, time.Second*1)
+	err := n.conf.Socket.Send(relay, pkt, time.Second*1)
+	return err
+
 }
 
 // AddPeer implements peer.Service
