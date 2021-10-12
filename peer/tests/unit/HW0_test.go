@@ -3,6 +3,7 @@ package unit
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -190,6 +191,8 @@ func Test_HW0_Network_Multiple(t *testing.T) {
 		}
 	}()
 
+	fmt.Println("go routine 1")
+
 	// Sending loop for n2
 	go func() {
 		defer sendWG.Done()
@@ -202,16 +205,15 @@ func Test_HW0_Network_Multiple(t *testing.T) {
 		}
 	}()
 
+	fmt.Println("go routine 2")
+
 	// wait for both nodes to send their packets
 	sendWG.Wait()
-
 	time.Sleep(time.Second * 1)
-
 	close(stop)
 
 	// wait for listening node to finish
 	rcvWG.Wait()
-
 	sort.Sort(transport.ByPacketID(n1Received))
 	sort.Sort(transport.ByPacketID(n2Received))
 	sort.Sort(transport.ByPacketID(n1Sent))
@@ -352,7 +354,7 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 	// test case with a provided transport
 	getTest := func(transp transport.Transport) func(*testing.T) {
 		return func(t *testing.T) {
-			//t.Parallel()
+			t.Parallel()
 
 			fake := z.NewFakeMessage(t)
 			handler, status := fake.GetHandler(t)

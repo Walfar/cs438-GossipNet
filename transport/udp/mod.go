@@ -97,7 +97,9 @@ func (p *packets) getAll() []transport.Packet {
 // Close implements transport.Socket. It returns an error if already closed.
 func (s *Socket) Close() error {
 	for addr := range s.writeConnections {
+		s.mutex.Lock()
 		err := s.writeConnections[addr].Close()
+		s.mutex.Unlock()
 		if err != nil {
 			return err
 		}
