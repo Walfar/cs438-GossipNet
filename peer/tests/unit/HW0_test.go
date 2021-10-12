@@ -415,8 +415,7 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 			status.CheckCalled(t)
 		}
 	}
-
-	t.Run("channel transport", getTest(channelFac()))
+	//t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
 
