@@ -233,7 +233,6 @@ func Test_HW0_Messaging_AddPeer(t *testing.T) {
 
 	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:1")
 	defer node1.Stop()
-
 	// > at the begining the routing table should only contain the entry to
 	// ourself
 
