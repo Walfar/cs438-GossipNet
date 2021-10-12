@@ -368,7 +368,6 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 			defer node2.Stop()
 
 			node1.AddPeer(node2.GetAddr())
-
 			err := node1.Unicast(node2.GetAddr(), fake.GetNetMsg(t))
 			require.NoError(t, err)
 
@@ -415,7 +414,7 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 			status.CheckCalled(t)
 		}
 	}
-	//t.Run("channel transport", getTest(channelFac()))
+	t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
 
@@ -475,7 +474,7 @@ func Test_HW0_Messaging_Relaying(t *testing.T) {
 	// test case with a provided transport
 	getTest := func(transp transport.Transport) func(*testing.T) {
 		return func(t *testing.T) {
-			t.Parallel()
+			//t.Parallel()
 
 			fake := z.NewFakeMessage(t)
 			handler, status := fake.GetHandler(t)
@@ -572,6 +571,6 @@ func Test_HW0_Messaging_Relaying(t *testing.T) {
 		}
 	}
 
-	t.Run("channel transport", getTest(channelFac()))
+	//t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
