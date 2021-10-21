@@ -3,7 +3,6 @@ package unit
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -191,8 +190,6 @@ func Test_HW0_Network_Multiple(t *testing.T) {
 		}
 	}()
 
-	fmt.Println("go routine 1")
-
 	// Sending loop for n2
 	go func() {
 		defer sendWG.Done()
@@ -204,8 +201,6 @@ func Test_HW0_Network_Multiple(t *testing.T) {
 			require.NoError(t, err)
 		}
 	}()
-
-	fmt.Println("go routine 2")
 
 	// wait for both nodes to send their packets
 	sendWG.Wait()

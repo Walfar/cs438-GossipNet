@@ -15,13 +15,15 @@ import (
 // NewPeer creates a new peer. You can change the content and location of this
 // function but you MUST NOT change its signature and package location.
 func NewPeer(conf peer.Configuration) peer.Peer {
-	n := node{conf: conf, routingTableStruct: routingTableStruct{routingTable: make(peer.RoutingTable)}, stopchan: make(chan struct{})}
+	n := node{}
+	n.conf = conf
+	n.routingTableSync.routingTable = make(map[string]string)
+	n.addr = n.conf.Socket.GetAddress()
+	//init routingTable with node's addr
+	n.SetRoutingEntry(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress())
 	//init register callback for chat messages
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
-	//init routingTable with node's addr
-	n.routingTableStruct.mutex.Lock()
-	n.routingTableStruct.routingTable[n.conf.Socket.GetAddress()] = n.conf.Socket.GetAddress()
-	n.routingTableStruct.mutex.Unlock()
+
 	return &n
 }
 
@@ -31,15 +33,16 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 type node struct {
 	peer.Peer
 	conf peer.Configuration
+	addr string
 	//channel to know when goroutine should stop
-	stopchan           chan struct{}
-	routingTableStruct routingTableStruct
+	stopchan         chan struct{}
+	routingTableSync routingTableSync
 }
 
 //Thread safe routingTable struct
-type routingTableStruct struct {
+type routingTableSync struct {
+	sync.Mutex
 	routingTable peer.RoutingTable
-	mutex        sync.Mutex
 }
 
 func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
@@ -54,31 +57,46 @@ func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 
 // Start implements peer.Service
 func (n *node) Start() error {
-	var err error
 	errs := make(chan error)
+	n.stopchan = make(chan struct{})
 	go func() {
 		for {
 			select {
 			case <-n.stopchan:
-				err = <-errs
 				return
 			default:
-				pkt, err2 := n.conf.Socket.Recv(time.Second * 1)
-				if errors.Is(err2, transport.TimeoutErr(0)) {
+				pkt, err := n.conf.Socket.Recv(time.Second * 1)
+				if errors.Is(err, transport.TimeoutErr(0)) {
 					continue
+				} else if err != nil {
+					errs <- err
 				}
-				if pkt.Header.Destination == n.conf.Socket.GetAddress() {
-					errs <- n.conf.MessageRegistry.ProcessPacket(pkt)
+
+				n.AddPeer(pkt.Header.RelayedBy)
+				n.SetRoutingEntry(pkt.Header.Source, pkt.Header.RelayedBy)
+
+				if pkt.Header.Destination == "" {
+					//broadcast
+				} else if pkt.Header.Destination == n.conf.Socket.GetAddress() {
+					err = n.conf.MessageRegistry.ProcessPacket(pkt)
+					if err != nil {
+						errs <- err
+					}
 				} else {
 					pkt.Header.RelayedBy = n.conf.Socket.GetAddress()
-					n.routingTableStruct.mutex.Lock()
-					newDestination := n.routingTableStruct.routingTable[pkt.Header.Destination]
-					n.routingTableStruct.mutex.Unlock()
-					errs <- n.conf.Socket.Send(newDestination, pkt, time.Second*1)
+					err := n.conf.Socket.Send(pkt.Header.Destination, pkt, time.Second*1)
+					if err != nil {
+						errs <- err
+					}
 				}
 			}
 		}
 	}()
+	close(errs)
+	err := <-errs
+	if err != nil {
+		n.Stop()
+	}
 	return err
 }
 
@@ -90,49 +108,67 @@ func (n *node) Stop() error {
 
 // Unicast implements peer.Messaging
 func (n *node) Unicast(dest string, msg transport.Message) error {
-	relay, ok := n.routingTableStruct.routingTable[dest]
-	if !ok {
-		return xerrors.Errorf("Unknown address")
+	relay := n.routingTableSync.get(dest)
+
+	if relay == "" {
+		return xerrors.Errorf("the destination is not in the routing table")
 	}
-	header := transport.NewHeader(n.conf.Socket.GetAddress(), relay, dest, 0)
-	header.RelayedBy = n.conf.Socket.GetAddress()
+
+	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
 	pkt := transport.Packet{Header: &header, Msg: &msg}
-	err := n.conf.Socket.Send(relay, pkt, time.Second*1)
+	err := n.conf.Socket.Send(relay, pkt, 0)
 	return err
 
 }
 
 // AddPeer implements peer.Service
 func (n *node) AddPeer(addr ...string) {
-	for _, addr := range addr {
-		n.routingTableStruct.mutex.Lock()
-		n.routingTableStruct.routingTable[addr] = addr
-		n.routingTableStruct.mutex.Unlock()
+	for _, address := range addr {
+		if address != n.conf.Socket.GetAddress() {
+			n.SetRoutingEntry(address, address)
+		}
+
 	}
 }
 
 // GetRoutingTable implements peer.Service
 func (n *node) GetRoutingTable() peer.RoutingTable {
-	routingTableCopy := routingTableStruct{routingTable: make(map[string]string)}
-	n.routingTableStruct.mutex.Lock()
-	for k, v := range n.routingTableStruct.routingTable {
-		routingTableCopy.mutex.Lock()
-		routingTableCopy.routingTable[k] = v
-		routingTableCopy.mutex.Unlock()
+	routingTableCopy := make(peer.RoutingTable)
+
+	for k := range n.routingTableSync.routingTable {
+		routingTableCopy[k] = n.routingTableSync.get(k)
 	}
-	n.routingTableStruct.mutex.Unlock()
-	return routingTableCopy.routingTable
+	return routingTableCopy
 }
 
 // SetRoutingEntry implements peer.Service
 func (n *node) SetRoutingEntry(origin, relayAddr string) {
-	if relayAddr == "" {
-		n.routingTableStruct.mutex.Lock()
-		delete(n.routingTableStruct.routingTable, origin)
-		n.routingTableStruct.mutex.Unlock()
+	if origin == "" {
+
+	} else if relayAddr == "" {
+		n.routingTableSync.delete(origin)
 	} else {
-		n.routingTableStruct.mutex.Lock()
-		n.routingTableStruct.routingTable[origin] = relayAddr
-		n.routingTableStruct.mutex.Unlock()
+		n.routingTableSync.add(origin, relayAddr)
 	}
+}
+
+func (routingTableSync *routingTableSync) add(destAddr, relayAddr string) {
+	routingTableSync.Lock()
+	defer routingTableSync.Unlock()
+
+	routingTableSync.routingTable[destAddr] = relayAddr
+}
+
+func (routingTableSync *routingTableSync) get(destAddr string) string {
+	routingTableSync.Lock()
+	defer routingTableSync.Unlock()
+
+	return routingTableSync.routingTable[destAddr]
+}
+
+func (routingTableSync *routingTableSync) delete(destAddr string) {
+	routingTableSync.Lock()
+	defer routingTableSync.Unlock()
+
+	delete(routingTableSync.routingTable, destAddr)
 }
