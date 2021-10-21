@@ -1,62 +1,46 @@
 package udp
 
 import (
-	"fmt"
 	"math"
 	"net"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"go.dedis.ch/cs438/internal/traffic"
 	"go.dedis.ch/cs438/transport"
-	"golang.org/x/xerrors"
 )
 
 const bufSize = 65000
 
-var counter uint32 = 2000
-
 // NewUDP returns a new udp transport implementation.
 func NewUDP() transport.Transport {
-	return &UDP{writeConnections: make(map[string]net.Conn)}
+	return &UDP{
+		traffic: traffic.NewTraffic(),
+	}
 }
 
 // UDP implements a transport layer using UDP
 //
 // - implements transport.Transport
 type UDP struct {
-	mutex            sync.Mutex
-	writeConnections map[string]net.Conn
-	readConnection   net.Conn
+	traffic *traffic.Traffic
 }
 
 // CreateSocket implements transport.Transport
 func (n *UDP) CreateSocket(address string) (transport.ClosableSocket, error) {
-	if net.ParseIP(strings.Split(address, ":")[0]) == nil {
-		return nil, xerrors.Errorf("Not a valid address")
-	}
-	if strings.HasSuffix(address, ":0") {
-		address = address[:len(address)-2]
-		port := atomic.AddUint32(&counter, 1)
-		address = fmt.Sprintf("%s:%d", address, port)
-	}
-	udpAddr, err := net.ResolveUDPAddr("udp", address)
+	socket := Socket{}
+	socket.UDP = n
+
+	var err error = nil
+	socket.conn, err = net.ListenPacket("udp", address)
 	if err != nil {
 		return nil, err
 	}
-	n.mutex.Lock()
-	n.readConnection, err = net.ListenUDP("udp", udpAddr)
-	n.mutex.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return &Socket{
-		UDP:    n,
-		myAddr: address,
-		ins:    packets{},
-		outs:   packets{},
-	}, nil
+
+	socket.myAddr = socket.conn.LocalAddr().String()
+
+	return &socket, err
+
 }
 
 // Socket implements a network socket using UDP.
@@ -66,8 +50,12 @@ func (n *UDP) CreateSocket(address string) (transport.ClosableSocket, error) {
 type Socket struct {
 	*UDP
 	myAddr string
-	ins    packets
-	outs   packets
+
+	sync.RWMutex
+	conn net.PacketConn
+
+	ins  packets
+	outs packets
 }
 
 type packets struct {
@@ -96,46 +84,52 @@ func (p *packets) getAll() []transport.Packet {
 
 // Close implements transport.Socket. It returns an error if already closed.
 func (s *Socket) Close() error {
-	for addr := range s.writeConnections {
-		s.mutex.Lock()
-		err := s.writeConnections[addr].Close()
-		s.mutex.Unlock()
-		if err != nil {
-			return err
-		}
-		delete(s.writeConnections, addr)
-	}
-	return s.readConnection.Close()
+	s.Lock()
+	defer s.Unlock()
+
+	err := s.conn.Close()
+	return err
+
 }
 
 // Send implements transport.Socket
 func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) error {
+
+	errs := make(chan error, 1)
+
 	if timeout == 0 {
 		timeout = math.MaxInt64
 	}
-	select {
-	case <-time.After(timeout):
-		return transport.TimeoutErr(timeout)
-	default:
+
+	go func() {
+
+		dst, err := net.ResolveUDPAddr("udp", dest)
+
+		if err != nil {
+			errs <- err
+		}
+
 		buf, err := pkt.Marshal()
 		if err != nil {
-			return err
+			errs <- err
 		}
+
+		_, err = s.conn.WriteTo(buf, dst)
 		if err != nil {
-			return err
+			errs <- err
 		}
-		if s.writeConnections[dest] == nil {
-			s.writeConnections[dest], err = net.Dial("udp", dest)
-			if err != nil {
-				return err
-			}
-		}
-		_, err = s.writeConnections[dest].Write(buf)
-		if err != nil {
-			return err
-		}
-		s.outs.add(pkt)
-		return nil
+
+		s.outs.add(pkt.Copy())
+		s.traffic.LogSent(pkt.Header.RelayedBy, dest, pkt)
+
+		errs <- err
+	}()
+
+	select {
+	case err := <-errs:
+		return err
+	case <-time.After(timeout):
+		return transport.TimeoutErr(timeout)
 	}
 
 }
@@ -144,40 +138,46 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 // the timeout is reached. In the case the timeout is reached, return a
 // TimeoutErr.
 func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
+
+	errs := make(chan error, 1)
+
 	if timeout == 0 {
 		timeout = math.MaxInt64
 	}
-	s.mutex.Lock()
+
+	buf := make([]byte, bufSize)
+	var pkt transport.Packet
+
+	go func() {
+		n, addr, err := s.conn.ReadFrom(buf)
+
+		if n > 0 {
+			err = (&pkt).Unmarshal(buf[:n])
+			if err != nil {
+				errs <- err
+			}
+
+			s.traffic.LogRecv(addr.String(), pkt.Header.Destination, pkt)
+			s.ins.add(pkt.Copy())
+
+		}
+		errs <- err
+	}()
+
 	select {
+	case err := <-errs:
+		return pkt, err
 	case <-time.After(timeout):
 		return transport.Packet{}, transport.TimeoutErr(timeout)
-	default:
-		buf := make([]byte, bufSize)
-		var pkt transport.Packet
-		n, err := s.readConnection.Read(buf)
-		if err != nil {
-			s.mutex.Unlock()
-			return pkt, err
-		}
-		err = pkt.Unmarshal(buf[0:n])
-		if err != nil {
-			s.mutex.Unlock()
-			return pkt, err
-		}
-		//We discard the packets sent by the address itself
-		if pkt.Header.Source != s.myAddr {
-			s.ins.add(pkt)
-		}
-		s.mutex.Unlock()
-		return pkt, nil
 	}
+
 }
 
 // GetAddress implements transport.Socket. It returns the address assigned. Can
 // be useful in the case one provided a :0 address, which makes the system use a
 // random free port.
 func (s *Socket) GetAddress() string {
-	return s.myAddr
+	return s.conn.LocalAddr().String()
 }
 
 // GetIns implements transport.Socket
