@@ -9,8 +9,11 @@ import (
 	"github.com/rs/zerolog"
 	"go.dedis.ch/cs438/gui/httpnode/types"
 	"go.dedis.ch/cs438/peer"
+<<<<<<< HEAD
 
 	"go.dedis.ch/cs438/transport"
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 )
 
 // NewMessaging returns a new initialized messaging.
@@ -76,6 +79,7 @@ func (m messaging) UnicastHandler() http.HandlerFunc {
 	}
 }
 
+<<<<<<< HEAD
 func (m messaging) BroadcastHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -92,6 +96,8 @@ func (m messaging) BroadcastHandler() http.HandlerFunc {
 	}
 }
 
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 // [
 // 	 "127.0.0.1:xxx",
 // 	 "127.0.0.1:yyy"
@@ -209,6 +215,7 @@ func (m messaging) unicastPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 }
+<<<<<<< HEAD
 
 func (m messaging) broadcastPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -235,3 +242,5 @@ func (m messaging) broadcastPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 }
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading

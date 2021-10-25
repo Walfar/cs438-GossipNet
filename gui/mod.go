@@ -75,6 +75,7 @@ func main() {
 						Usage: "addr of the node",
 						Value: "127.0.0.1:0",
 					},
+<<<<<<< HEAD
 					&urfave.DurationFlag{
 						Name:  "antientropy",
 						Usage: "Antientropy interval",
@@ -101,6 +102,8 @@ func main() {
 						// mongering.
 						Value: 0.5,
 					},
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 				},
 				Action: start,
 			},
@@ -143,11 +146,14 @@ func start(c *urfave.Context) error {
 	conf := peer.Configuration{
 		Socket:          sock,
 		MessageRegistry: standard.NewRegistry(),
+<<<<<<< HEAD
 
 		AntiEntropyInterval: c.Duration("antientropy"),
 		HeartbeatInterval:   c.Duration("heartbeat"),
 		AckTimeout:          c.Duration("acktimeout"),
 		ContinueMongering:   c.Float64("continuemongering"),
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 	}
 
 	node := peerFactory(conf)

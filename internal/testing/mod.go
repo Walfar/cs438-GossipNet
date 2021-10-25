@@ -7,8 +7,11 @@ import (
 	"math/rand"
 	"testing"
 
+<<<<<<< HEAD
 	"time"
 
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 	"github.com/stretchr/testify/require"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/registry"
@@ -122,12 +125,15 @@ type configTemplate struct {
 
 	withWatcher bool
 	autoStart   bool
+<<<<<<< HEAD
 
 	AntiEntropyInterval time.Duration
 	HeartbeatInterval   time.Duration
 
 	AckTimeout        time.Duration
 	ContinueMongering float64
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 }
 
 func newConfigTemplate() configTemplate {
@@ -139,12 +145,15 @@ func newConfigTemplate() configTemplate {
 		handlers: make([]registry.Exec, 0),
 
 		registry: standard.NewRegistry(),
+<<<<<<< HEAD
 
 		AntiEntropyInterval: 0,
 		HeartbeatInterval:   0,
 
 		AckTimeout:        time.Second * 3,
 		ContinueMongering: 0.5,
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 	}
 }
 
@@ -173,6 +182,7 @@ func WithMessageRegistry(r registry.Registry) Option {
 	}
 }
 
+<<<<<<< HEAD
 // WithAntiEntropy specifies the antientropy interval.
 func WithAntiEntropy(d time.Duration) Option {
 	return func(ct *configTemplate) {
@@ -201,6 +211,8 @@ func WithAckTimeout(d time.Duration) Option {
 	}
 }
 
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 // NewTestNode returns a new test node.
 func NewTestNode(t *testing.T, f peer.Factory, trans transport.Transport,
 	addr string, opts ...Option) TestNode {
@@ -217,6 +229,7 @@ func NewTestNode(t *testing.T, f peer.Factory, trans transport.Transport,
 
 	config.Socket = socket
 	config.MessageRegistry = template.registry
+<<<<<<< HEAD
 	config.AntiEntropyInterval = template.AntiEntropyInterval
 	config.HeartbeatInterval = template.HeartbeatInterval
 	config.ContinueMongering = template.ContinueMongering
@@ -224,16 +237,25 @@ func NewTestNode(t *testing.T, f peer.Factory, trans transport.Transport,
 
 	node := f(config)
 
+=======
+	node := f(config)
+>>>>>>> cs438-2021-hw0-student-83/grading
 	require.Equal(t, len(template.messages), len(template.handlers))
 	for i, msg := range template.messages {
 		config.MessageRegistry.RegisterMessageCallback(msg, template.handlers[i])
 	}
+<<<<<<< HEAD
 
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 	if template.autoStart {
 		err := node.Start()
 		require.NoError(t, err)
 	}
+<<<<<<< HEAD
 
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 	return TestNode{
 		Peer:   node,
 		config: config,
@@ -361,6 +383,7 @@ func GetChat(t *testing.T, msg *transport.Message) types.ChatMessage {
 	return chatMessage
 }
 
+<<<<<<< HEAD
 // GetRumor returns the rumor associated to the transport.Message.
 func GetRumor(t *testing.T, msg *transport.Message) types.RumorsMessage {
 	require.Equal(t, "rumor", msg.Type)
@@ -409,6 +432,8 @@ func GetEmpty(t *testing.T, msg *transport.Message) types.EmptyMessage {
 	return emptyMessage
 }
 
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 // GetRandBytes returns random bytes.
 func GetRandBytes(t *testing.T) []byte {
 	res := make([]byte, 12)

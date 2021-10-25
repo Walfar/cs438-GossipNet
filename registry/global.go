@@ -23,6 +23,7 @@ func init() {
 	GlobalRegistry.Add(types.StatusMessage{})
 	GlobalRegistry.Add(types.RumorsMessage{})
 	GlobalRegistry.Add(types.PrivateMessage{})
+
 }
 
 type globalRegistry struct {

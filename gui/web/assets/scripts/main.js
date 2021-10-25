@@ -18,7 +18,10 @@ const main = function () {
     application.register("unicast", Unicast);
     application.register("routing", Routing);
     application.register("packets", Packets);
+<<<<<<< HEAD
     application.register("broadcast", Broadcast);
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 
     initCollapsible();
 };
@@ -426,6 +429,7 @@ class Packets extends BaseElement {
     }
 }
 
+<<<<<<< HEAD
 class Broadcast extends BaseElement {
     static get targets() {
         return ["chatMessage", "privateMessage", "privateRecipients"];
@@ -508,3 +512,5 @@ class Broadcast extends BaseElement {
     }
 }
 
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading

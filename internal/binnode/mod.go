@@ -107,9 +107,12 @@ func (b *binnode) Start() error {
 		"start",
 		"--proxyaddr", "127.0.0.1:0",
 		"--nodeaddr", b.conf.Socket.GetAddress(),
+<<<<<<< HEAD
 		"--antientropy", b.conf.AntiEntropyInterval.String(),
 		"--heartbeat", b.conf.HeartbeatInterval.String(),
 		"--acktimeout", b.conf.AckTimeout.String(),
+=======
+>>>>>>> cs438-2021-hw0-student-83/grading
 	}
 
 	cmd := exec.Command(b.binaryPath, args...)
