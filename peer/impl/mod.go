@@ -110,6 +110,7 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		if n.statusMapSync.get(rumor.Origin)+1 == rumor.Sequence {
 			newData = true
 			println(n.addr + " adding rumor")
+
 			n.statusMapSync.incrementSequence(rumor.Origin)
 			n.rumorsLogSync.addRumor(rumor.Origin, rumor)
 
@@ -239,10 +240,12 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 			if err != nil {
 				return err
 			}
+			println(n.addr + " sending his status back to " + pkt.Header.Source)
 			statusMsg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
 			err = n.Unicast(pkt.Header.Source, statusMsg)
 			if err != nil && err.Error() == "the destination is not in the routing table" {
-				err = n.conf.Socket.Send(pkt.Header.Source, transport.Packet{Header: pkt.Header, Msg: &statusMsg}, 0)
+				header := transport.NewHeader(n.addr, pkt.Header.RelayedBy, pkt.Header.Source, 0)
+				err = n.conf.Socket.Send(pkt.Header.Source, transport.Packet{Header: &header, Msg: &statusMsg}, 0)
 				if err != nil {
 					return err
 				}
@@ -252,12 +255,10 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 
 	if !hasLessStatus && !hasMoreStatus {
 		println("equal status")
-		for k, v := range n.GetStatusMap() {
-			println(k + " : " + strconv.FormatUint(uint64(v), 10))
-		}
 		//ContinueMongering
 		p := rand.Float64()
 		if p <= n.conf.ContinueMongering && p != 0.0 {
+			println("continue mongering")
 			buf, err := json.Marshal(types.StatusMessage(n.GetStatusMap()))
 			if err != nil {
 				return err
@@ -270,7 +271,6 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 		}
 
 	}
-	println("return status")
 	return nil
 }
 
