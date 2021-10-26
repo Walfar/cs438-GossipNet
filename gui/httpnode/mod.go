@@ -69,11 +69,7 @@ func NewHTTPNode(node peer.Peer, conf peer.Configuration) Proxy {
 
 	mux.Handle("/messaging/peers", http.HandlerFunc(messagingctrl.PeerHandler()))
 	mux.Handle("/messaging/routing", http.HandlerFunc(messagingctrl.RoutingHandler()))
-	mux.Handle("/messaging/unicast", http.HandlerFunc(messagingctrl.UnicastHandler()))
-<<<<<<< HEAD
 	mux.Handle("/messaging/broadcast", http.HandlerFunc(messagingctrl.BroadcastHandler()))
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 
 	mux.Handle("/socket/ins", http.HandlerFunc(socketctrl.InsHandler()))
 	mux.Handle("/socket/outs", http.HandlerFunc(socketctrl.OutsHandler()))

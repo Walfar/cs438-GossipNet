@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -21,6 +22,8 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	n.conf = conf
 	n.routingTableSync.routingTable = make(map[string]string)
 	n.statusMapSync.statusMap = map[string]uint{}
+	n.rumorsLogSync.rumorsLog = map[string][]types.Rumor{}
+	n.ackReceivedChan = make(chan bool)
 	n.addr = n.conf.Socket.GetAddress()
 	//init routingTable with node's addr
 	n.SetRoutingEntry(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress())
@@ -30,11 +33,10 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.StatusMessage{}, n.ExecStatusMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.AckMessage{}, n.ExecAckMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PrivateMessage{}, n.ExecPrivateMessage)
-	// ----- is this the right place to call those functions ? Should be done at initialisation or when starting nodes ?
 	//Periodically send status messages to neighbors
-	n.antiEntropy()
+	//n.antiEntropy()
 	//Periodically update routing table of all peers
-	n.heartbeat()
+	//n.heartbeat()
 	n.seq = 1
 
 	return &n
@@ -50,7 +52,7 @@ type node struct {
 	//channel to know when goroutine should stop listening
 	stopchan chan struct{}
 	//channel to know when goroutine should stop expecting ack message
-	ackReceivedChan chan struct{}
+	ackReceivedChan chan bool
 
 	routingTableSync routingTableSync
 	statusMapSync    statusMapSync
@@ -93,29 +95,34 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 
-	//send back Ack message to sender
-	ack := types.AckMessage{AckedPacketID: pkt.Header.PacketID, Status: n.GetStatusMap()}
-	ackMsg := transport.Message{Type: "AckMessage", Payload: json.RawMessage(ack.String())}
-	err := n.Unicast(pkt.Header.Source, ackMsg)
-	if err != nil {
-		return err
-	}
+	log.Println(n.addr + " received rumor " + rumorsMsg.String() + " from " + pkt.Header.Source)
 
 	newData := false
 	// process each rumor
 	for _, rumor := range rumorsMsg.Rumors {
-		//If new rumor in the rumorsMsg
-		if n.statusMapSync.get(rumor.Origin) != rumor.Sequence {
-			newData = true
-		}
+
 		//If expected sequence
 		if n.statusMapSync.get(rumor.Origin)+1 == rumor.Sequence {
-
+			newData = true
+			println(n.addr + " adding rumor")
 			n.statusMapSync.incrementSequence(rumor.Origin)
 			n.rumorsLogSync.addRumor(rumor.Origin, rumor)
 
 			newPkt := transport.Packet{Header: pkt.Header, Msg: rumor.Msg}
 			err := n.conf.MessageRegistry.ProcessPacket(newPkt)
+			if err != nil {
+				return err
+			}
+
+			//send back Ack message to sender (if not processing locally)
+			log.Println("casting ack msg")
+			ack := types.AckMessage{AckedPacketID: pkt.Header.PacketID, Status: n.GetStatusMap()}
+			buf, err := json.Marshal(ack)
+			if err != nil {
+				return err
+			}
+			ackMsg := transport.Message{Type: types.AckMessage{}.Name(), Payload: buf}
+			err = n.Unicast(pkt.Header.Source, ackMsg)
 			if err != nil {
 				return err
 			}
@@ -129,14 +136,27 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	}
 
 	if newData {
-		for randNeighbor := range n.routingTableSync.routingTable {
-			//Send to random neighbor (but not source)
-			if randNeighbor != pkt.Header.Source {
-				err := n.Unicast(randNeighbor, transport.Message{Type: "RumorsMessage", Payload: json.RawMessage(rumorsMsg.String())})
+		log.Println(n.addr + " recevied new data")
+		buf, err := json.Marshal(rumorsMsg)
+		if err != nil {
+			return err
+		}
+		println("new data for " + n.addr)
+
+		println(pkt.Header.Source)
+		println(pkt.Header.RelayedBy)
+
+		//Check to prevent loops in case of a closed circuit with 3 nodes
+		if len(n.GetRoutingTable()) != 3 || pkt.Header.Source == pkt.Header.RelayedBy {
+			err = n.sendMessageToRandomNeighbor(n.addr, transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf}, []string{pkt.Header.Source, pkt.Header.RelayedBy, n.addr}, false)
+			if err != nil {
 				return err
 			}
 		}
+
 	}
+
+	log.Println("ret")
 
 	return nil
 }
@@ -152,42 +172,66 @@ func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 }
 
 func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
-	close(n.ackReceivedChan) //might have to make at init, if ack received before broadcasting
-	n.conf.MessageRegistry.ProcessPacket(pkt)
+	ackMsg, ok := msg.(*types.AckMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	println(n.addr + " received ack msg")
+	n.ackReceivedChan <- true
+	buf, err := json.Marshal(ackMsg.Status)
+	if err != nil {
+		return err
+	}
+	newPkt := transport.Packet{Header: pkt.Header, Msg: &transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}}
+	n.conf.MessageRegistry.ProcessPacket(newPkt)
 	return nil
 }
 
 func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error {
+	log.Println(n.addr + " received status message from " + pkt.Header.Source + " of type " + msg.Name())
+	//log.Println(n.GetStatusMap())
 
-	remoteStatus, ok := msg.(types.StatusMessage)
+	remoteStatus, ok := msg.(*types.StatusMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-
+	//log.Println(remoteStatus)
 	var rumors []types.Rumor
 	hasMoreStatus := false
 	//check if n has more status than remote
 	for neighbor, seq := range n.GetStatusMap() {
-		if seq > remoteStatus[neighbor] {
+		if seq > (*remoteStatus)[neighbor] {
 			hasMoreStatus = true
-			rumors = append(rumors, n.rumorsLogSync.getRumors(neighbor)[seq+1:]...)
+			toAppend := n.rumorsLogSync.getRumors(neighbor)[(*remoteStatus)[neighbor]:]
+			rumors = append(rumors, toAppend...)
 		}
 	}
+
 	if hasMoreStatus {
+		println("has more status")
 		//send rumors (sorted by seq) as a rumorsMsg
 		rumorsMsg := types.RumorsMessage{Rumors: rumors}
-		err := n.Unicast(pkt.Header.Source, transport.Message{Type: "RumorsMessage", Payload: json.RawMessage(rumorsMsg.String())})
+		buf, err := json.Marshal(rumorsMsg)
+		if err != nil {
+			return err
+		}
+		err = n.Unicast(pkt.Header.Source, transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf})
 		if err != nil {
 			return err
 		}
 	}
 
 	hasLessStatus := false
-	for neighbor, seq := range remoteStatus {
+	for neighbor, seq := range *remoteStatus {
 		if seq > n.statusMapSync.get(neighbor) {
 			hasLessStatus = true
+			println("has less status")
 			//send status to remote
-			err := n.Unicast(pkt.Header.Source, transport.Message{Type: "StatusMessage", Payload: json.RawMessage(types.StatusMessage(n.GetStatusMap()).String())})
+			buf, err := json.Marshal(types.StatusMessage(n.GetStatusMap()))
+			if err != nil {
+				return err
+			}
+			err = n.Unicast(pkt.Header.Source, transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf})
 			if err != nil {
 				return err
 			}
@@ -195,18 +239,26 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 	}
 
 	if !hasLessStatus && !hasMoreStatus {
+		println("equal status")
+		for k, v := range n.GetStatusMap() {
+			println(k + " : " + strconv.FormatUint(uint64(v), 10))
+		}
 		//ContinueMongering
 		p := rand.Float64()
 		if p <= n.conf.ContinueMongering && p != 0.0 {
-			msg := transport.Message{Type: "StatusMessage", Payload: json.RawMessage(types.StatusMessage(n.GetStatusMap()).String())}
-			err := n.sendMessageToRandomNeighbor(msg, []string{pkt.Header.Source}, false)
+			buf, err := json.Marshal(types.StatusMessage(n.GetStatusMap()))
+			if err != nil {
+				return err
+			}
+			msg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
+			err = n.sendMessageToRandomNeighbor(n.addr, msg, []string{pkt.Header.Source, n.addr}, false)
 			if err != nil {
 				return err
 			}
 		}
 
 	}
-
+	println("return status")
 	return nil
 }
 
@@ -237,6 +289,7 @@ func (n *node) Start() error {
 				} else if pkt.Header.Destination == n.conf.Socket.GetAddress() {
 					err = n.conf.MessageRegistry.ProcessPacket(pkt)
 					if err != nil {
+						println("error is " + err.Error())
 						errs <- err
 					}
 				} else {
@@ -265,12 +318,18 @@ func (n *node) Stop() error {
 
 func (n *node) antiEntropy() error {
 	if n.conf.AntiEntropyInterval != 0 {
+		log.Println("non-zero anti-entropy")
 		ticker := time.NewTicker(n.conf.AntiEntropyInterval)
 		errs := make(chan error)
 		go func() {
 			for range ticker.C {
-				msg := transport.Message{Type: "StatusMessage", Payload: json.RawMessage(types.StatusMessage(n.GetStatusMap()).String())}
-				err := n.sendMessageToRandomNeighbor(msg, nil, false)
+				buf, err := json.Marshal(types.StatusMessage(n.GetStatusMap()))
+				if err != nil {
+					errs <- err
+				}
+				log.Println("anti-entropy tick")
+				msg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
+				err = n.sendMessageToRandomNeighbor(n.addr, msg, []string{n.addr}, false)
 				if err != nil {
 					errs <- err
 				}
@@ -278,6 +337,7 @@ func (n *node) antiEntropy() error {
 		}()
 		close(errs)
 		err := <-errs
+
 		return err
 	}
 	return nil
@@ -285,16 +345,27 @@ func (n *node) antiEntropy() error {
 }
 
 func (n *node) heartbeat() error {
-	err := n.Broadcast(transport.Message{Type: "EmptyMessage", Payload: json.RawMessage(types.EmptyMessage{}.String())})
+	buf, err := json.Marshal(types.EmptyMessage{})
+	if err != nil {
+		return err
+	}
+	log.Println("broadcasting empty msg")
+	err = n.Broadcast(transport.Message{Type: types.EmptyMessage{}.Name(), Payload: buf})
 	if err != nil {
 		return err
 	}
 	if n.conf.HeartbeatInterval != 0 {
+		log.Println("non-zero heartbeat")
 		ticker := time.NewTicker(n.conf.HeartbeatInterval)
 		errs := make(chan error)
 		go func() {
 			for range ticker.C {
-				err := n.Broadcast(transport.Message{Type: "EmptyMessage", Payload: json.RawMessage(types.EmptyMessage{}.String())})
+				buf, err := json.Marshal(types.EmptyMessage{})
+				if err != nil {
+					errs <- err
+				}
+				log.Println("heartbeat tick")
+				err = n.Broadcast(transport.Message{Type: types.EmptyMessage{}.Name(), Payload: buf})
 				if err != nil {
 					errs <- err
 				}
@@ -317,6 +388,7 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 
 	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
 	pkt := transport.Packet{Header: &header, Msg: &msg}
+	log.Println(n.addr + " unicasting msg with type " + msg.Type + " to " + dest)
 	err := n.conf.Socket.Send(relay, pkt, 0)
 	return err
 
@@ -333,29 +405,35 @@ func (n *node) AddPeer(addr ...string) {
 }
 
 //Sends a message to a random neighbor and waits for an ack response if it's expected
-func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvoid []string, expectAck bool) error {
+func (n *node) sendMessageToRandomNeighbor(source string, msg transport.Message, neighborsToAvoid []string, expectAck bool) error {
 	for randNeighbor := range n.GetRoutingTable() {
 		for _, neighborToAvoid := range neighborsToAvoid {
 			if neighborToAvoid == randNeighbor {
-				return n.sendMessageToRandomNeighbor(msg, neighborsToAvoid, true)
+				return n.sendMessageToRandomNeighbor(source, msg, neighborsToAvoid, true)
 			}
 		}
-		err := n.Unicast(randNeighbor, msg)
+		log.Println(n.addr + " sends a message of type " + msg.Type + " to " + randNeighbor)
+		header := transport.NewHeader(source, n.addr, randNeighbor, 0)
+		pkt := transport.Packet{Header: &header, Msg: &msg}
+		err := n.conf.Socket.Send(randNeighbor, pkt, 0)
 		if err != nil {
 			return err
 		}
 
-		if expectAck {
-			n.ackReceivedChan = make(chan struct{})
+		//We don't need to wait for an ack if we process the msg locally
+		if expectAck && n.addr != randNeighbor {
+			log.Println("expecting ack")
 			//Is this goroutine a blocking operation ?
 			go func() {
 				select {
 				case <-n.ackReceivedChan:
+					log.Println("ack channel closed")
 					//ack received
 					return
 				case <-time.After(n.conf.AckTimeout):
 					//ack timeout
-					n.sendMessageToRandomNeighbor(msg, append(neighborsToAvoid, randNeighbor), true)
+					log.Println("timeout")
+					n.sendMessageToRandomNeighbor(source, msg, append(neighborsToAvoid, randNeighbor), true)
 					//catch error
 					return
 
@@ -368,36 +446,45 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 }
 
 func (n *node) Broadcast(msg transport.Message) error {
-
+	log.Println("broadcasting")
 	//create a rumor
 	rumor := types.Rumor{Origin: n.addr, Sequence: n.seq, Msg: &msg}
 	var rumors []types.Rumor
-	rumors[0] = rumor
+	rumors = append(rumors, rumor)
 	rumorsMessage := types.RumorsMessage{Rumors: rumors[:]}
 
 	//put the message in a pkt
-	msgToSend := transport.Message{Type: "RumorsMessage", Payload: json.RawMessage(rumorsMessage.String())}
-
-	err := n.sendMessageToRandomNeighbor(msgToSend, nil, true)
+	buf, err := json.Marshal(rumorsMessage)
 	if err != nil {
 		return err
 	}
+	msgToSend := transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf}
+
+	err = n.sendMessageToRandomNeighbor(n.addr, msgToSend, []string{n.addr}, true)
+	if err != nil {
+		return err
+	}
+	n.statusMapSync.incrementSequence(rumor.Origin)
+	n.rumorsLogSync.addRumor(rumor.Origin, rumor)
 	n.seq += 1
 
-	//process the pkt locally
+	//process pkt locally
+	println(n.addr + " processing pkt of type " + msg.Type + " locally")
 	header := transport.NewHeader(n.addr, n.addr, n.addr, 0)
-	pkt := transport.Packet{Header: &header, Msg: &msgToSend}
-	//what does it mean to process rumor ?
+	pkt := transport.Packet{Header: &header, Msg: &msg}
 	return n.conf.MessageRegistry.ProcessPacket(pkt)
 }
 
 //-------------------------------------------------------------------------------------------------------------
 
 func (n *node) GetRumorsLog() map[string][]types.Rumor {
+	n.rumorsLogSync.Lock()
+	defer n.rumorsLogSync.Unlock()
+
 	rumorsLogCopy := make(map[string][]types.Rumor)
 
-	for k := range n.statusMapSync.statusMap {
-		rumorsLogCopy[k] = n.rumorsLogSync.getRumors(k)
+	for k, v := range n.rumorsLogSync.rumorsLog {
+		rumorsLogCopy[k] = v
 	}
 	return rumorsLogCopy
 }
@@ -406,6 +493,7 @@ func (rumorsLogSync *rumorsLogSync) getRumors(neighborAddr string) []types.Rumor
 	rumorsLogSync.Lock()
 	defer rumorsLogSync.Unlock()
 
+	println(len(rumorsLogSync.rumorsLog[neighborAddr]))
 	return rumorsLogSync.rumorsLog[neighborAddr]
 }
 
@@ -413,17 +501,19 @@ func (rumorsLogSync *rumorsLogSync) addRumor(neighborAddr string, rumor types.Ru
 	rumorsLogSync.Lock()
 	defer rumorsLogSync.Unlock()
 
-	rumors := rumorsLogSync.getRumors(neighborAddr)
-	rumorsLogSync.rumorsLog[neighborAddr] = append(rumors, rumor)
+	rumorsLogSync.rumorsLog[neighborAddr] = append(rumorsLogSync.rumorsLog[neighborAddr], rumor)
 }
 
 //-------------------------------------------------------------------------------------------------------------
 
 func (n *node) GetStatusMap() map[string]uint {
+	n.statusMapSync.Lock()
+	defer n.statusMapSync.Unlock()
+
 	statusMapCopy := make(map[string]uint)
 
-	for k := range n.statusMapSync.statusMap {
-		statusMapCopy[k] = n.statusMapSync.get(k)
+	for k, v := range n.statusMapSync.statusMap {
+		statusMapCopy[k] = v
 	}
 	return statusMapCopy
 }
@@ -439,17 +529,21 @@ func (statusMapSync *statusMapSync) incrementSequence(neighborAddr string) {
 	statusMapSync.Lock()
 	defer statusMapSync.Unlock()
 
-	statusMapSync.statusMap[neighborAddr] += 1
+	statusMapSync.statusMap[neighborAddr]++
+	println("incremented by 1 " + neighborAddr + ", now at " + strconv.FormatUint(uint64(statusMapSync.statusMap[neighborAddr]), 10))
 }
 
 //---------------------------------------------------------------------------------------------------------------
 
 // GetRoutingTable implements peer.Service
 func (n *node) GetRoutingTable() peer.RoutingTable {
+	n.routingTableSync.Lock()
+	defer n.routingTableSync.Unlock()
+
 	routingTableCopy := make(peer.RoutingTable)
 
-	for k := range n.routingTableSync.routingTable {
-		routingTableCopy[k] = n.routingTableSync.get(k)
+	for k, v := range n.routingTableSync.routingTable {
+		routingTableCopy[k] = v
 	}
 	return routingTableCopy
 }

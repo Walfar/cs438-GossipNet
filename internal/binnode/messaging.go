@@ -28,7 +28,6 @@ func (b binnode) Unicast(dest string, msg transport.Message) error {
 	return nil
 }
 
-<<<<<<< HEAD
 // Broadcast implements peer.Messaging
 func (b binnode) Broadcast(msg transport.Message) error {
 	endpoint := "http://" + b.proxyAddr + "/messaging/broadcast"
@@ -41,8 +40,6 @@ func (b binnode) Broadcast(msg transport.Message) error {
 	return nil
 }
 
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 // AddPeer implements peer.Messaging
 func (b binnode) AddPeer(addr ...string) {
 	endpoint := "http://" + b.proxyAddr + "/messaging/peers"

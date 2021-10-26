@@ -81,10 +81,7 @@ func Test_HW0_Network_Simple(t *testing.T) {
 	require.NoError(t, err)
 
 	require.EqualValues(t, pkt, res)
-<<<<<<< HEAD
 
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 	// > n2 send to n1
 
 	pkt = z.GetRandomPkt(t)
@@ -98,23 +95,14 @@ func Test_HW0_Network_Simple(t *testing.T) {
 	require.EqualValues(t, pkt, res)
 
 	// > n1 send to n1
-<<<<<<< HEAD
-
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 	pkt = z.GetRandomPkt(t)
 
 	err = sock1.Send(sock1.GetAddress(), pkt, 0)
 	require.NoError(t, err)
-<<<<<<< HEAD
 
 	res, err = sock1.Recv(time.Second)
 	require.NoError(t, err)
 
-=======
-	res, err = sock1.Recv(time.Second)
-	require.NoError(t, err)
->>>>>>> cs438-2021-hw0-student-83/grading
 	require.EqualValues(t, pkt, res)
 }
 
@@ -219,21 +207,13 @@ func Test_HW0_Network_Multiple(t *testing.T) {
 
 	// wait for both nodes to send their packets
 	sendWG.Wait()
-<<<<<<< HEAD
 
 	time.Sleep(time.Second * 1)
 
-=======
-	time.Sleep(time.Second * 1)
->>>>>>> cs438-2021-hw0-student-83/grading
 	close(stop)
 
 	// wait for listening node to finish
 	rcvWG.Wait()
-<<<<<<< HEAD
-
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 	sort.Sort(transport.ByPacketID(n1Received))
 	sort.Sort(transport.ByPacketID(n2Received))
 	sort.Sort(transport.ByPacketID(n1Sent))
@@ -251,10 +231,7 @@ func Test_HW0_Messaging_AddPeer(t *testing.T) {
 
 	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:1")
 	defer node1.Stop()
-<<<<<<< HEAD
 
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 	// > at the begining the routing table should only contain the entry to
 	// ourself
 
@@ -390,10 +367,7 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 			defer node2.Stop()
 
 			node1.AddPeer(node2.GetAddr())
-<<<<<<< HEAD
 
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 			err := node1.Unicast(node2.GetAddr(), fake.GetNetMsg(t))
 			require.NoError(t, err)
 
@@ -440,10 +414,6 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 			status.CheckCalled(t)
 		}
 	}
-<<<<<<< HEAD
-
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 	t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
@@ -479,18 +449,11 @@ func Test_HW0_Messaging_Unicast_Fail(t *testing.T) {
 			require.Error(t, err)
 
 			time.Sleep(time.Second)
-<<<<<<< HEAD
 
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 			n1Ins := node1.GetIns()
 			n2Ins := node2.GetIns()
 
 			// > n1 should have not received any packet
-<<<<<<< HEAD
-
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 			require.Len(t, n1Ins, 0)
 
 			// > n2 should have not received any packet
@@ -498,10 +461,6 @@ func Test_HW0_Messaging_Unicast_Fail(t *testing.T) {
 			require.Len(t, n2Ins, 0)
 		}
 	}
-<<<<<<< HEAD
-
-=======
->>>>>>> cs438-2021-hw0-student-83/grading
 	t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
@@ -571,16 +530,13 @@ func Test_HW0_Messaging_Relaying(t *testing.T) {
 			pkt = n2Ins[0]
 
 			require.Equal(t, node3.GetAddr(), pkt.Header.Destination)
-<<<<<<< HEAD
-			require.Equal(t, node2.GetAddr(), pkt.Header.RelayedBy)
-=======
+			//require.Equal(t, node2.GetAddr(), pkt.Header.RelayedBy)
 
 			// This check is commented for the spring 2021 session because of a
 			// bug found too late on the transport implementation. See PR #47.
 			//
 			// require.Equal(t, node1.GetAddr(), pkt.Header.RelayedBy)
 
->>>>>>> cs438-2021-hw0-student-83/grading
 			require.Equal(t, node1.GetAddr(), pkt.Header.Source)
 
 			fake.Compare(t, pkt.Msg)

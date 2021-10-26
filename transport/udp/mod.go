@@ -159,7 +159,6 @@ func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
 
 			s.traffic.LogRecv(addr.String(), pkt.Header.Destination, pkt)
 			s.ins.add(pkt.Copy())
-
 		}
 		errs <- err
 	}()
