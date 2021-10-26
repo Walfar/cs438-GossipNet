@@ -33,10 +33,11 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.StatusMessage{}, n.ExecStatusMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.AckMessage{}, n.ExecAckMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PrivateMessage{}, n.ExecPrivateMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.EmptyMessage{}, n.ExecEmptyMessage)
 	//Periodically send status messages to neighbors
-	//n.antiEntropy()
+	n.antiEntropy()
 	//Periodically update routing table of all peers
-	//n.heartbeat()
+	n.heartbeat()
 	n.seq = 1
 
 	return &n
@@ -78,6 +79,10 @@ type statusMapSync struct {
 
 // -------------------------------------------------------------------------------------------------------
 
+func (n *node) ExecEmptyMessage(msg types.Message, pkt transport.Packet) error {
+	return nil
+}
+
 func (n *node) ExecPrivateMessage(msg types.Message, pkt transport.Packet) error {
 	privateMsg, ok := msg.(*types.PrivateMessage)
 	if !ok {
@@ -114,24 +119,27 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 				return err
 			}
 
+			n.SetRoutingEntry(rumor.Origin, pkt.Header.RelayedBy)
+
 			//send back Ack message to sender (if not processing locally)
-			log.Println("casting ack msg")
+			log.Println(n.addr + " casting ack msg to " + pkt.Header.Source)
 			ack := types.AckMessage{AckedPacketID: pkt.Header.PacketID, Status: n.GetStatusMap()}
 			buf, err := json.Marshal(ack)
 			if err != nil {
 				return err
 			}
 			ackMsg := transport.Message{Type: types.AckMessage{}.Name(), Payload: buf}
+			//we use send instead of unicast because, concluding from the tests, n doesnt always have the address of sender in the routing table
 			err = n.Unicast(pkt.Header.Source, ackMsg)
-			if err != nil {
-				return err
+			if err != nil && err.Error() == "the destination is not in the routing table" {
+				err = n.conf.Socket.Send(pkt.Header.Source, transport.Packet{Header: pkt.Header, Msg: &ackMsg}, 0)
+				if err != nil {
+					return err
+				}
 			}
+
 		}
 		//else, some rumor(s) was not received by this node
-		//either way, we update the routing table (if rumor not from a neighbor) -- or should it be only when expected ?
-		if _, ok := n.GetRoutingTable()[rumor.Origin]; !ok {
-			n.routingTableSync.add(rumor.Origin, pkt.Header.RelayedBy)
-		}
 
 	}
 
@@ -142,13 +150,13 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 			return err
 		}
 		println("new data for " + n.addr)
-
-		println(pkt.Header.Source)
-		println(pkt.Header.RelayedBy)
-
-		//Check to prevent loops in case of a closed circuit with 3 nodes
-		if len(n.GetRoutingTable()) != 3 || pkt.Header.Source == pkt.Header.RelayedBy {
-			err = n.sendMessageToRandomNeighbor(n.addr, transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf}, []string{pkt.Header.Source, pkt.Header.RelayedBy, n.addr}, false)
+		//To prevent loops in closed systems, we make sure that we can send to other random neighbors than itself, source and origin
+		routingTableCopy := n.GetRoutingTable()
+		delete(routingTableCopy, n.addr)
+		delete(routingTableCopy, pkt.Header.Source)
+		delete(routingTableCopy, rumorsMsg.Rumors[0].Origin)
+		if len(routingTableCopy) > 0 {
+			err = n.sendMessageToRandomNeighbor(transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf}, []string{pkt.Header.Source, rumorsMsg.Rumors[0].Origin, n.addr}, false)
 			if err != nil {
 				return err
 			}
@@ -231,9 +239,13 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 			if err != nil {
 				return err
 			}
-			err = n.Unicast(pkt.Header.Source, transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf})
-			if err != nil {
-				return err
+			statusMsg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
+			err = n.Unicast(pkt.Header.Source, statusMsg)
+			if err != nil && err.Error() == "the destination is not in the routing table" {
+				err = n.conf.Socket.Send(pkt.Header.Source, transport.Packet{Header: pkt.Header, Msg: &statusMsg}, 0)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -251,7 +263,7 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 				return err
 			}
 			msg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
-			err = n.sendMessageToRandomNeighbor(n.addr, msg, []string{pkt.Header.Source, n.addr}, false)
+			err = n.sendMessageToRandomNeighbor(msg, []string{pkt.Header.Source, n.addr}, false)
 			if err != nil {
 				return err
 			}
@@ -280,9 +292,6 @@ func (n *node) Start() error {
 				} else if err != nil {
 					errs <- err
 				}
-
-				n.AddPeer(pkt.Header.RelayedBy)
-				n.SetRoutingEntry(pkt.Header.Source, pkt.Header.RelayedBy)
 
 				if pkt.Header.Destination == "" {
 					//do nothing yet
@@ -329,7 +338,7 @@ func (n *node) antiEntropy() error {
 				}
 				log.Println("anti-entropy tick")
 				msg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
-				err = n.sendMessageToRandomNeighbor(n.addr, msg, []string{n.addr}, false)
+				err = n.sendMessageToRandomNeighbor(msg, []string{n.addr}, false)
 				if err != nil {
 					errs <- err
 				}
@@ -351,6 +360,7 @@ func (n *node) heartbeat() error {
 	}
 	log.Println("broadcasting empty msg")
 	err = n.Broadcast(transport.Message{Type: types.EmptyMessage{}.Name(), Payload: buf})
+	log.Println("done broadcasting")
 	if err != nil {
 		return err
 	}
@@ -405,17 +415,17 @@ func (n *node) AddPeer(addr ...string) {
 }
 
 //Sends a message to a random neighbor and waits for an ack response if it's expected
-func (n *node) sendMessageToRandomNeighbor(source string, msg transport.Message, neighborsToAvoid []string, expectAck bool) error {
+func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvoid []string, expectAck bool) error {
+
 	for randNeighbor := range n.GetRoutingTable() {
 		for _, neighborToAvoid := range neighborsToAvoid {
 			if neighborToAvoid == randNeighbor {
-				return n.sendMessageToRandomNeighbor(source, msg, neighborsToAvoid, true)
+				return n.sendMessageToRandomNeighbor(msg, neighborsToAvoid, true)
 			}
 		}
 		log.Println(n.addr + " sends a message of type " + msg.Type + " to " + randNeighbor)
-		header := transport.NewHeader(source, n.addr, randNeighbor, 0)
-		pkt := transport.Packet{Header: &header, Msg: &msg}
-		err := n.conf.Socket.Send(randNeighbor, pkt, 0)
+
+		err := n.Unicast(randNeighbor, msg)
 		if err != nil {
 			return err
 		}
@@ -433,7 +443,7 @@ func (n *node) sendMessageToRandomNeighbor(source string, msg transport.Message,
 				case <-time.After(n.conf.AckTimeout):
 					//ack timeout
 					log.Println("timeout")
-					n.sendMessageToRandomNeighbor(source, msg, append(neighborsToAvoid, randNeighbor), true)
+					n.sendMessageToRandomNeighbor(msg, append(neighborsToAvoid, randNeighbor), true)
 					//catch error
 					return
 
@@ -446,7 +456,13 @@ func (n *node) sendMessageToRandomNeighbor(source string, msg transport.Message,
 }
 
 func (n *node) Broadcast(msg transport.Message) error {
-	log.Println("broadcasting")
+	log.Println(n.addr + " broadcasting")
+
+	//There is no use broadcasting a message when there is only the current node in the routing table
+	if len(n.GetRoutingTable()) == 1 {
+		return nil
+	}
+
 	//create a rumor
 	rumor := types.Rumor{Origin: n.addr, Sequence: n.seq, Msg: &msg}
 	var rumors []types.Rumor
@@ -460,7 +476,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 	}
 	msgToSend := transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf}
 
-	err = n.sendMessageToRandomNeighbor(n.addr, msgToSend, []string{n.addr}, true)
+	err = n.sendMessageToRandomNeighbor(msgToSend, []string{n.addr}, true)
 	if err != nil {
 		return err
 	}
@@ -493,7 +509,6 @@ func (rumorsLogSync *rumorsLogSync) getRumors(neighborAddr string) []types.Rumor
 	rumorsLogSync.Lock()
 	defer rumorsLogSync.Unlock()
 
-	println(len(rumorsLogSync.rumorsLog[neighborAddr]))
 	return rumorsLogSync.rumorsLog[neighborAddr]
 }
 
@@ -550,6 +565,7 @@ func (n *node) GetRoutingTable() peer.RoutingTable {
 
 // SetRoutingEntry implements peer.Service
 func (n *node) SetRoutingEntry(origin, relayAddr string) {
+	println(n.addr + " adding routing entry for " + origin + " : " + relayAddr)
 	if origin == "" {
 
 	} else if relayAddr == "" {
