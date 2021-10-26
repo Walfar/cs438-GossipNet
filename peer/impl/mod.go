@@ -6,7 +6,6 @@ import (
 	"log"
 	"math"
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
 
@@ -101,8 +100,6 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 
-	log.Println(n.addr + " received rumor " + rumorsMsg.String() + " from " + pkt.Header.Source)
-
 	newData := false
 	// process each rumor
 	for _, rumor := range rumorsMsg.Rumors {
@@ -110,7 +107,6 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		//If expected sequence
 		if n.statusMapSync.get(rumor.Origin)+1 == rumor.Sequence {
 			newData = true
-			println(n.addr + " adding rumor")
 
 			n.statusMapSync.incrementSequence(rumor.Origin)
 			n.rumorsLogSync.addRumor(rumor.Origin, rumor)
@@ -124,7 +120,6 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 			n.SetRoutingEntry(rumor.Origin, pkt.Header.RelayedBy)
 
 			//send back Ack message to sender (if not processing locally)
-			log.Println(n.addr + " casting ack msg to " + pkt.Header.Source)
 			ack := types.AckMessage{AckedPacketID: pkt.Header.PacketID, Status: n.GetStatusMap()}
 			buf, err := json.Marshal(ack)
 			if err != nil {
@@ -147,12 +142,10 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	}
 
 	if newData {
-		log.Println(n.addr + " recevied new data")
 		buf, err := json.Marshal(rumorsMsg)
 		if err != nil {
 			return err
 		}
-		println("new data for " + n.addr)
 		//To prevent loops in closed systems, we make sure that we can send to other random neighbors than itself, source and origin
 		routingTableCopy := n.GetRoutingTable()
 		delete(routingTableCopy, n.addr)
@@ -166,8 +159,6 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		}
 
 	}
-
-	log.Println("ret")
 
 	return nil
 }
@@ -187,7 +178,6 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	println(n.addr + " received ack msg from " + pkt.Header.Source)
 	n.ackReceivedChan <- true
 	buf, err := json.Marshal(ackMsg.Status)
 	if err != nil {
@@ -199,27 +189,22 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 }
 
 func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error {
-	log.Println(n.addr + " received status message from " + pkt.Header.Source + " of type " + msg.Name())
-	//log.Println(n.GetStatusMap())
 
 	remoteStatus, ok := msg.(*types.StatusMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	//log.Println(remoteStatus)
 	var rumors []types.Rumor
 	hasMoreStatus := false
 	//check if n has more status than remote
 	for neighbor, seq := range n.GetStatusMap() {
 		if seq > (*remoteStatus)[neighbor] {
 			hasMoreStatus = true
-			toAppend := n.rumorsLogSync.getRumors(neighbor)[(*remoteStatus)[neighbor]:]
-			rumors = append(rumors, toAppend...)
+			rumors = append(rumors, n.rumorsLogSync.getRumors(neighbor)[(*remoteStatus)[neighbor]:]...)
 		}
 	}
 
 	if hasMoreStatus {
-		println("has more status")
 		//send rumors (sorted by seq) as a rumorsMsg
 		rumorsMsg := types.RumorsMessage{Rumors: rumors}
 		buf, err := json.Marshal(rumorsMsg)
@@ -228,10 +213,8 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 		}
 		statusMsg := transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf}
 		header := transport.NewHeader(n.addr, n.addr, pkt.Header.Source, 0)
-		println("status unicasting")
 		err = n.Unicast(pkt.Header.Source, statusMsg)
 		if err != nil && err.Error() == "the destination is not in the routing table" {
-			println("status sending")
 			err = n.conf.Socket.Send(pkt.Header.Source, transport.Packet{Header: &header, Msg: &statusMsg}, 0)
 			if err != nil {
 				return err
@@ -243,13 +226,11 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 	for neighbor, seq := range *remoteStatus {
 		if seq > n.statusMapSync.get(neighbor) {
 			hasLessStatus = true
-			println("has less status")
 			//send status to remote
 			buf, err := json.Marshal(types.StatusMessage(n.GetStatusMap()))
 			if err != nil {
 				return err
 			}
-			println(n.addr + " sending his status back to " + pkt.Header.Source)
 			statusMsg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
 			err = n.Unicast(pkt.Header.Source, statusMsg)
 			if err != nil && err.Error() == "the destination is not in the routing table" {
@@ -263,11 +244,9 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 	}
 
 	if !hasLessStatus && !hasMoreStatus {
-		println("equal status")
 		//ContinueMongering
 		p := rand.Float64()
 		if p <= n.conf.ContinueMongering && p != 0.0 {
-			println("continue mongering")
 			buf, err := json.Marshal(types.StatusMessage(n.GetStatusMap()))
 			if err != nil {
 				return err
@@ -307,7 +286,6 @@ func (n *node) Start() error {
 				} else if pkt.Header.Destination == n.conf.Socket.GetAddress() {
 					err = n.conf.MessageRegistry.ProcessPacket(pkt)
 					if err != nil {
-						println("error is " + err.Error())
 						errs <- err
 					}
 				} else {
@@ -336,7 +314,6 @@ func (n *node) Stop() error {
 
 func (n *node) antiEntropy() error {
 	if n.conf.AntiEntropyInterval != 0 {
-		log.Println("non-zero anti-entropy")
 		ticker := time.NewTicker(n.conf.AntiEntropyInterval)
 		errs := make(chan error)
 		go func() {
@@ -345,7 +322,6 @@ func (n *node) antiEntropy() error {
 				if err != nil {
 					errs <- err
 				}
-				log.Println("anti-entropy tick")
 				msg := transport.Message{Type: types.StatusMessage{}.Name(), Payload: buf}
 				err = n.sendMessageToRandomNeighbor(msg, []string{n.addr}, false)
 				if err != nil {
@@ -367,14 +343,11 @@ func (n *node) heartbeat() error {
 	if err != nil {
 		return err
 	}
-	log.Println("broadcasting empty msg")
 	err = n.Broadcast(transport.Message{Type: types.EmptyMessage{}.Name(), Payload: buf})
-	log.Println("done broadcasting")
 	if err != nil {
 		return err
 	}
 	if n.conf.HeartbeatInterval != 0 {
-		log.Println("non-zero heartbeat")
 		ticker := time.NewTicker(n.conf.HeartbeatInterval)
 		errs := make(chan error)
 		go func() {
@@ -383,7 +356,6 @@ func (n *node) heartbeat() error {
 				if err != nil {
 					errs <- err
 				}
-				log.Println("heartbeat tick")
 				err = n.Broadcast(transport.Message{Type: types.EmptyMessage{}.Name(), Payload: buf})
 				if err != nil {
 					errs <- err
@@ -407,7 +379,6 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 
 	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
 	pkt := transport.Packet{Header: &header, Msg: &msg}
-	log.Println(n.addr + " unicasting msg with type " + msg.Type + " to " + dest)
 	err := n.conf.Socket.Send(relay, pkt, 0)
 	return err
 
@@ -433,8 +404,6 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 			}
 		}
 
-		println(n.addr + " sending msg to " + randNeighbor)
-
 		err := n.Unicast(randNeighbor, msg)
 		if err != nil {
 			return err
@@ -442,23 +411,19 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 
 		//We don't need to wait for an ack if we process the msg locally. For a status we don't expect an ack
 		if expectAck && n.addr != randNeighbor {
-			log.Println("expecting ack")
 			var ackTimeout time.Duration
 			if n.conf.AckTimeout == 0 {
 				ackTimeout = math.MaxInt64
 			} else {
 				ackTimeout = n.conf.AckTimeout
 			}
-			//Is this goroutine a blocking operation ?
 			go func() {
 				select {
 				case <-n.ackReceivedChan:
-					log.Println("ack channel closed")
 					//ack received
 					return
 				case <-time.After(ackTimeout):
 					//ack timeout
-					log.Println("timeout")
 					n.sendMessageToRandomNeighbor(msg, append(neighborsToAvoid, randNeighbor), true)
 					//catch error
 					return
@@ -472,9 +437,7 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 }
 
 func (n *node) Broadcast(msg transport.Message) error {
-	log.Println(n.addr + " broadcasting msg of type " + msg.Type)
 
-	//There is no use broadcasting a message when there is only the current node in the routing table
 	if len(n.GetRoutingTable()) == 1 {
 		return nil
 	}
@@ -501,7 +464,6 @@ func (n *node) Broadcast(msg transport.Message) error {
 	n.seq += 1
 
 	//process pkt locally
-	println(n.addr + " processing pkt of type " + msg.Type + " locally")
 	header := transport.NewHeader(n.addr, n.addr, n.addr, 0)
 	pkt := transport.Packet{Header: &header, Msg: &msg}
 	return n.conf.MessageRegistry.ProcessPacket(pkt)
@@ -561,7 +523,6 @@ func (statusMapSync *statusMapSync) incrementSequence(neighborAddr string) {
 	defer statusMapSync.Unlock()
 
 	statusMapSync.statusMap[neighborAddr]++
-	println("incremented by 1 " + neighborAddr + ", now at " + strconv.FormatUint(uint64(statusMapSync.statusMap[neighborAddr]), 10))
 }
 
 //---------------------------------------------------------------------------------------------------------------
@@ -581,7 +542,6 @@ func (n *node) GetRoutingTable() peer.RoutingTable {
 
 // SetRoutingEntry implements peer.Service
 func (n *node) SetRoutingEntry(origin, relayAddr string) {
-	println(n.addr + " adding routing entry for " + origin + " : " + relayAddr)
 	if origin == "" {
 
 	} else if relayAddr == "" {
