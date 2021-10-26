@@ -396,7 +396,7 @@ func Test_HW1_Messaging_Broadcast_ContinueMongering(t *testing.T) {
 	err := node1.Broadcast(fake.GetNetMsg(t))
 	require.NoError(t, err)
 
-	time.Sleep(time.Second * 1)
+	time.Sleep(time.Second * 5)
 
 	n1Ins := node1.GetIns()
 	n1Outs := node1.GetOuts()
