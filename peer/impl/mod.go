@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -224,9 +225,11 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 		if err != nil {
 			return err
 		}
-		err = n.Unicast(pkt.Header.Source, transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf})
-		if err != nil {
-			return err
+		if err != nil && err.Error() == "the destination is not in the routing table" {
+			err = n.conf.Socket.Send(pkt.Header.Source, transport.Packet{Header: pkt.Header, Msg: &transport.Message{Type: types.RumorsMessage{}.Name(), Payload: buf}}, 0)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -423,7 +426,8 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 				return n.sendMessageToRandomNeighbor(msg, neighborsToAvoid, true)
 			}
 		}
-		log.Println(n.addr + " sends a message of type " + msg.Type + " to " + randNeighbor)
+
+		println(n.addr + " sending msg to " + randNeighbor)
 
 		err := n.Unicast(randNeighbor, msg)
 		if err != nil {
@@ -433,6 +437,12 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 		//We don't need to wait for an ack if we process the msg locally
 		if expectAck && n.addr != randNeighbor {
 			log.Println("expecting ack")
+			var ackTimeout time.Duration
+			if n.conf.AckTimeout == 0 {
+				ackTimeout = math.MaxInt64
+			} else {
+				ackTimeout = n.conf.AckTimeout
+			}
 			//Is this goroutine a blocking operation ?
 			go func() {
 				select {
@@ -440,7 +450,7 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 					log.Println("ack channel closed")
 					//ack received
 					return
-				case <-time.After(n.conf.AckTimeout):
+				case <-time.After(ackTimeout):
 					//ack timeout
 					log.Println("timeout")
 					n.sendMessageToRandomNeighbor(msg, append(neighborsToAvoid, randNeighbor), true)
@@ -456,7 +466,7 @@ func (n *node) sendMessageToRandomNeighbor(msg transport.Message, neighborsToAvo
 }
 
 func (n *node) Broadcast(msg transport.Message) error {
-	log.Println(n.addr + " broadcasting")
+	log.Println(n.addr + " broadcasting msg of type " + msg.Type)
 
 	//There is no use broadcasting a message when there is only the current node in the routing table
 	if len(n.GetRoutingTable()) == 1 {
