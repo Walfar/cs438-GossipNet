@@ -181,15 +181,13 @@ func start(c *urfave.Context) error {
 	}
 
 	conf := peer.Configuration{
-		Socket:          sock,
-		MessageRegistry: standard.NewRegistry(),
-
+		Socket:              sock,
+		MessageRegistry:     standard.NewRegistry(),
 		AntiEntropyInterval: c.Duration("antientropy"),
 		HeartbeatInterval:   c.Duration("heartbeat"),
 		AckTimeout:          c.Duration("acktimeout"),
 		ContinueMongering:   c.Float64("continuemongering"),
-
-		ChunkSize: c.Uint("chunksize"),
+		ChunkSize:           c.Uint("chunksize"),
 		BackoffDataRequest: peer.Backoff{
 			Initial: c.Duration("backoffinitial"),
 			Factor:  c.Uint("backofffactor"),

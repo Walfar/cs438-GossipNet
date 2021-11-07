@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
-
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -121,18 +120,15 @@ type configTemplate struct {
 	messages []types.Message
 	handlers []registry.Exec
 
-	registry registry.Registry
-
-	withWatcher bool
-	autoStart   bool
-
+	registry            registry.Registry
+	withWatcher         bool
+	autoStart           bool
 	AntiEntropyInterval time.Duration
 	HeartbeatInterval   time.Duration
 
 	AckTimeout        time.Duration
 	ContinueMongering float64
-
-	chunkSize uint
+	chunkSize         uint
 
 	storage storage.Storage
 
@@ -268,7 +264,6 @@ func NewTestNode(t *testing.T, f peer.Factory, trans transport.Transport,
 	for i, msg := range template.messages {
 		config.MessageRegistry.RegisterMessageCallback(msg, template.handlers[i])
 	}
-
 	if template.autoStart {
 		err := node.Start()
 		require.NoError(t, err)
