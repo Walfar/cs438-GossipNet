@@ -36,8 +36,8 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 		routingTable:           RoutingTable{table: map[string]string{peerAddress: peerAddress}},
 		rumorLists:             RumorLists{rumorLists: map[string][]types.Rumor{peerAddress: make([]types.Rumor, 0)}},
 		ackWaitList:            AckWaitList{list: make(map[string]chan struct{})},
-		searchRequestWaitList:  SearchRequestWaitList{list: make(map[string]chan []types.FileInfo)},
 		dataRequestWaitList:    DataRequestWaitList{list: make(map[string]chan []byte)},
+		searchRequestWaitList:  SearchRequestWaitList{list: make(map[string]chan []types.FileInfo)},
 		processedSearchRequest: make([]string, 0),
 		nbRunningRoutines:      0,
 		waitGroup:              sync.WaitGroup{},
@@ -162,6 +162,7 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 		return xerrors.Errorf("Empty destination: %v", dest)
 	}
 
+	println("unicasting from " + n.address + " to " + dest)
 	peerAddress := n.conf.Socket.GetAddress()
 	neigh := n.routingTable.getRelayAddr(dest)
 	if neigh == "" {
@@ -173,9 +174,9 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 	sendErr := n.conf.Socket.Send(neigh, packet, n.conf.AckTimeout)
 
 	if sendErr != nil {
+
 		return sendErr
 	}
-
 	return nil
 }
 
@@ -595,6 +596,7 @@ func (n *node) waitForDataReply(requestID string, neighbor string, trsptMsg tran
 				return
 			}
 			go n.waitForDataReply(requestID, neighbor, trsptMsg, errs, chunkChan, interval, retransmissionsLeft)
+			//todo: something after ?
 		}
 	}
 
@@ -684,24 +686,27 @@ func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern stri
 	}
 
 	if int(budget) <= len(n.GetRoutingTable())-1 {
-		println("budget inferior")
+		println(n.address+"budget inferior, %v", budget)
 		for budget != 0 {
 			neighbor := n.routingTable.ChooseRDMNeighborAddr(MakeExceptionMap(neighborsToAvoid...))
+			if neighbor == "" {
+				return fileInfos, nil
+			}
 			err := n.sendSearchRequestMessage(1, neighbor, pattern, requestId, origin)
 			if err != nil {
 				return fileInfos, err
 			}
 			budget--
 			neighborsToAvoid = append(neighborsToAvoid, neighbor)
-
 		}
 	} else {
-		println("budget superior %v", budget)
+		println(n.address + " budget superior")
 		i := 1
 		routingTableCopy := n.GetRoutingTable()
 		for _, neighborToAvoid := range neighborsToAvoid {
 			delete(routingTableCopy, neighborToAvoid)
 		}
+		println(len(routingTableCopy))
 		if len(routingTableCopy) == 0 {
 			return fileInfos, nil
 		}
@@ -768,8 +773,6 @@ func (n *node) resendSearchRequest(timeout time.Duration, budget uint, retransmi
 
 	requestChannel := make(chan []types.FileInfo)
 	n.searchRequestWaitList.addEntry(requestId, requestChannel)
-	fileInfos, _ := n.relaySearchRequestMessage([]string{n.address}, pattern, budget, requestId, n.address)
-	println(len(fileInfos))
 
 	for {
 		select {
@@ -781,7 +784,13 @@ func (n *node) resendSearchRequest(timeout time.Duration, budget uint, retransmi
 				return
 			}
 			retransmissionsLeft--
-			go n.resendSearchRequest(timeout, budget*conf.Factor, retransmissionsLeft, filename, conf, pattern, requestId)
+			budget *= conf.Factor
+			fileInfos, _ := n.relaySearchRequestMessage([]string{n.address}, pattern, budget, requestId, n.address)
+			filenameRec := n.fileInfosContainFullyKnown(fileInfos)
+			if filenameRec != "" {
+				filename <- filenameRec
+				return
+			}
 		case fileInfos := <-n.searchRequestWaitList.list[requestId]:
 			println("recevied")
 			close(requestChannel)

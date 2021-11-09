@@ -402,7 +402,6 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		if sendErr != nil {
 			return sendErr
 		}
-		n.conf.Socket.Send(searchRequestMsg.Origin, pkt, 0)
 
 		return nil
 	}
