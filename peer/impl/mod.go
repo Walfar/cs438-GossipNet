@@ -661,6 +661,7 @@ func (n *node) appendIfDoesntAlreadyContains(names []string, newName string) []s
 	return append(names, newName)
 }
 
+//returns only local fileInfos + sends a message to all neighbors considering budget
 func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern string, budget uint, requestId string, origin string) ([]types.FileInfo, error) {
 	var fileInfos []types.FileInfo
 	namingStore := n.conf.Storage.GetNamingStore()
@@ -741,82 +742,74 @@ func (n *node) sendSearchRequestMessage(budget uint, neighbor string, pattern st
 }
 
 func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name string, err error) {
-	namingStore := n.conf.Storage.GetNamingStore()
-	blobStore := n.conf.Storage.GetDataBlobStore()
+
 	filename := make(chan string)
-	namingStore.ForEach(func(name string, metahash []byte) bool {
-		if pattern.MatchString(name) && (blobStore.Get(string(metahash)) != nil) {
-			potentialFullKnown := true
-			splittedMetaFileValue := strings.Split(bytes.NewBuffer(blobStore.Get(string(metahash))).String(), peer.MetafileSep)
-			for _, chunkHash := range splittedMetaFileValue {
-				if blobStore.Get(chunkHash) == nil {
-					potentialFullKnown = false
+	requestChannel := make(chan []types.FileInfo)
+	requestId := xid.New().String()
+	n.searchRequestWaitList.addEntry(requestId, requestChannel)
+	retransmissionsLeft := conf.Retry
+	budget := conf.Initial
+
+	go func() {
+		namingStore := n.conf.Storage.GetNamingStore()
+		blobStore := n.conf.Storage.GetDataBlobStore()
+		namingStore.ForEach(func(name string, metahash []byte) bool {
+			if pattern.MatchString(name) && (blobStore.Get(string(metahash)) != nil) {
+				potentialFullKnown := true
+				splittedMetaFileValue := strings.Split(bytes.NewBuffer(blobStore.Get(string(metahash))).String(), peer.MetafileSep)
+				for _, chunkHash := range splittedMetaFileValue {
+					if blobStore.Get(chunkHash) == nil {
+						potentialFullKnown = false
+					}
+				}
+				if potentialFullKnown {
+					filename <- name
+					return true
 				}
 			}
-			if potentialFullKnown {
-				filename <- name
-				return true
-			}
-		}
-		return true
-	})
+			return true
+		})
+	}()
 
-	go n.resendSearchRequest(conf.Timeout, conf.Initial, int(conf.Retry), filename, conf, pattern.String(), xid.New().String())
-	println("done")
-	filenameResult := <-filename
-	println(filenameResult)
-	return filenameResult, nil
-}
-
-func (n *node) resendSearchRequest(timeout time.Duration, budget uint, retransmissionsLeft int, filename chan string, conf peer.ExpandingRing, pattern string, requestId string) {
-	timer := time.NewTimer(timeout)
-
-	requestChannel := make(chan []types.FileInfo)
-	n.searchRequestWaitList.addEntry(requestId, requestChannel)
+	ticker := time.NewTicker(conf.Timeout)
+	go n.relaySearchRequestMessage([]string{n.address}, pattern.String(), budget, requestId, n.address)
+	retransmissionsLeft--
 
 	for {
 		select {
-		case <-timer.C:
-			println("timeout")
+		case fileInfos := <-n.searchRequestWaitList.list[requestId]:
+			println("got some fileInfos")
+			for _, fileInfo := range fileInfos {
+				potentialFullKnown := true
+				for _, chunk := range fileInfo.Chunks {
+					if chunk == nil {
+						potentialFullKnown = false
+					}
+				}
+				if potentialFullKnown {
+					close(filename)
+					close(requestChannel)
+					n.searchRequestWaitList.removeEntry(requestId)
+					return fileInfo.Name, nil
+				}
+			}
+		case <-ticker.C:
+			println("timeout, retransmissions left is %v", retransmissionsLeft)
 			if retransmissionsLeft == 0 {
-				println("return filename")
-				filename <- ""
-				return
+				close(filename)
+				close(requestChannel)
+				n.searchRequestWaitList.removeEntry(requestId)
+				return "", nil
 			}
 			retransmissionsLeft--
 			budget *= conf.Factor
-			fileInfos, _ := n.relaySearchRequestMessage([]string{n.address}, pattern, budget, requestId, n.address)
-			filenameRec := n.fileInfosContainFullyKnown(fileInfos)
-			if filenameRec != "" {
-				filename <- filenameRec
-				return
-			}
-		case fileInfos := <-n.searchRequestWaitList.list[requestId]:
-			println("recevied")
+			go n.relaySearchRequestMessage([]string{n.address}, pattern.String(), budget, requestId, n.address)
+		case name := <-filename:
+			println("got an answer local")
+			close(filename)
 			close(requestChannel)
 			n.searchRequestWaitList.removeEntry(requestId)
-			filenameRec := n.fileInfosContainFullyKnown(fileInfos)
-			if filenameRec != "" {
-				filename <- filenameRec
-				return
-			}
+			return name, nil
 		}
 	}
-
-}
-
-func (n *node) fileInfosContainFullyKnown(fileInfos []types.FileInfo) string {
-	for _, fileInfo := range fileInfos {
-		println("fileinfo")
-		potentialFullKnown := true
-		for _, chunk := range fileInfo.Chunks {
-			if chunk == nil {
-				potentialFullKnown = false
-			}
-		}
-		if potentialFullKnown {
-			return fileInfo.Name
-		}
-	}
-	return ""
 }
