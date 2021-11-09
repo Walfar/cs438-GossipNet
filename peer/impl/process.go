@@ -365,7 +365,7 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not search request")
 		}
-		println("recevied search request from " + pkt.Header.Source)
+		println(n.address + "recevied search request from " + pkt.Header.Source)
 		//avoid duplicates
 		for _, requestId := range n.processedSearchRequest {
 			if requestId == searchRequestMsg.RequestID {
@@ -378,11 +378,11 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		origin := searchRequestMsg.Origin
 		requestId := searchRequestMsg.RequestID
 
-		fileInfos, err := n.relaySearchRequestMessage([]string{n.address, pkt.Header.Source, pkt.Header.RelayedBy}, pattern, budget, requestId, origin)
+		fileInfos, err := n.relaySearchRequestMessage([]string{n.address, pkt.Header.Source, pkt.Header.RelayedBy, searchRequestMsg.Origin}, pattern, budget, requestId, origin)
 		if err != nil {
 			return err
 		}
-		println("sending reply")
+		println(n.address + "sending reply")
 		for _, fileInfo := range fileInfos {
 			println(n.address + "has " + fileInfo.Name)
 		}
@@ -391,8 +391,18 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		if err != nil {
 			return err
 		}
+		println(n.address + "sending trsp msg")
 		searchReplyTrsptMsg := transport.Message{Type: types.SearchReplyMessage{}.Name(), Payload: buf}
-		n.Unicast(searchRequestMsg.Origin, searchReplyTrsptMsg)
+
+		peerAddress := n.conf.Socket.GetAddress()
+
+		header := transport.NewHeader(peerAddress, peerAddress, searchRequestMsg.Origin, 0)
+		packet := transport.Packet{Header: &header, Msg: &searchReplyTrsptMsg}
+		sendErr := n.conf.Socket.Send(searchRequestMsg.Origin, packet, n.conf.AckTimeout)
+		if sendErr != nil {
+			return sendErr
+		}
+		n.conf.Socket.Send(searchRequestMsg.Origin, pkt, 0)
 
 		return nil
 	}
