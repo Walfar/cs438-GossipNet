@@ -26,6 +26,40 @@ func (a *AckWaitList) removeEntry(ackID string) {
 	delete(a.list, ackID)
 }
 
+type SearchRequestWaitList struct {
+	lock sync.RWMutex
+	list map[string]chan []types.FileInfo
+}
+
+func (a *SearchRequestWaitList) addEntry(requestID string, requestChannel chan []types.FileInfo) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	a.list[requestID] = requestChannel
+}
+
+func (a *SearchRequestWaitList) removeEntry(requestID string) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	delete(a.list, requestID)
+}
+
+type DataRequestWaitList struct {
+	lock sync.RWMutex
+	list map[string]chan []byte
+}
+
+func (a *DataRequestWaitList) addEntry(requestID string, requestChannel chan []byte) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	a.list[requestID] = requestChannel
+}
+
+func (a *DataRequestWaitList) removeEntry(requestID string) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	delete(a.list, requestID)
+}
+
 type RumorLists struct {
 	lock       sync.Mutex
 	rumorLists map[string][]types.Rumor
@@ -154,4 +188,9 @@ func (rt *RoutingTable) ChooseRDMNeighborAddr(excepted map[string]struct{}) stri
 
 	return neighborsList[rdmIndex]
 
+}
+
+type Catalog struct {
+	lock    sync.RWMutex
+	catalog peer.Catalog
 }

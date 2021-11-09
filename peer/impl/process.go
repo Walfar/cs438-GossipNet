@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"encoding/json"
 	"log"
 	"math/rand"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 func (n *node) processChatMessage() registry.Exec {
 	return func(msg types.Message, pkt transport.Packet) error {
-		log.Printf(msg.String())
+		log.Print(msg.String())
 		return nil
 	}
 }
@@ -23,7 +24,7 @@ func (n *node) processRumorsMessage() registry.Exec {
 
 		rumorMsg, castOk := msg.(*types.RumorsMessage)
 
-		if rumorMsg.Name() != "rumor" || !castOk {
+		if !castOk {
 			return xerrors.Errorf("message type is not rumor")
 		}
 
@@ -123,7 +124,7 @@ func (n *node) processAckMessage() registry.Exec {
 	return func(msg types.Message, pkt transport.Packet) error {
 
 		ackMsg, castOk := msg.(*types.AckMessage)
-		if !castOk || ackMsg.Name() != "ack" {
+		if !castOk {
 			return xerrors.Errorf("message type is not ack")
 		}
 
@@ -160,7 +161,7 @@ func (n *node) processStatusMessage() registry.Exec {
 
 		remoteStatus, castOk := msg.(*types.StatusMessage)
 
-		if remoteStatus.Name() != "status" || !castOk {
+		if !castOk {
 			return xerrors.Errorf("message type is not rumor")
 		}
 
@@ -205,8 +206,8 @@ func (n *node) processStatusMessage() registry.Exec {
 func (n *node) processEmptyMessage() registry.Exec {
 	return func(msg types.Message, pkt transport.Packet) error {
 
-		emptyMsg, castOk := msg.(*types.EmptyMessage)
-		if !castOk || emptyMsg.Name() != "empty" {
+		_, castOk := msg.(*types.EmptyMessage)
+		if !castOk {
 			return xerrors.Errorf("message type is not ack")
 		}
 
@@ -226,7 +227,7 @@ func (n *node) processPrivateMessage() registry.Exec {
 	return func(msg types.Message, pkt transport.Packet) error {
 
 		privateMsg, castOk := msg.(*types.PrivateMessage)
-		if privateMsg.Name() != "private" || !castOk {
+		if !castOk {
 			return xerrors.Errorf("message type is not rumor")
 		}
 
@@ -286,4 +287,100 @@ func (n *node) FindDifferences(peerStatus types.StatusMessage, remoteStatus type
 	}
 
 	return mustSendStatusMsg, rumorsToSendToRemote, nil
+}
+
+func (n *node) processDataReplyMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+
+		dataReplyMsg, castOk := msg.(*types.DataReplyMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not data reply")
+		}
+
+		n.dataRequestWaitList.lock.RLock()
+		defer n.dataRequestWaitList.lock.RUnlock()
+
+		if _, ok := n.dataRequestWaitList.list[dataReplyMsg.RequestID]; ok {
+			n.dataRequestWaitList.list[dataReplyMsg.RequestID] <- dataReplyMsg.Value
+		} else {
+			return xerrors.Errorf("no awaiting ack with this id")
+		}
+		return nil
+	}
+}
+
+func (n *node) processDataRequestMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+		dataRequestMsg, castOk := msg.(*types.DataRequestMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not data request")
+		}
+		blobStore := n.conf.Storage.GetDataBlobStore()
+		content := blobStore.Get(dataRequestMsg.Key)
+		dataReplyMsg := types.DataReplyMessage{RequestID: dataRequestMsg.RequestID, Key: dataRequestMsg.Key, Value: content}
+		buf, err := json.Marshal(dataReplyMsg)
+		if err != nil {
+			return err
+		}
+		trsptMsg := transport.Message{Type: types.DataReplyMessage{}.Name(), Payload: buf}
+		err = n.Unicast(pkt.Header.Source, trsptMsg)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+func (n *node) processSearchReplyMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+		searchReplyMsg, castOk := msg.(*types.SearchReplyMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not search reply")
+		}
+		n.searchRequestWaitList.lock.RLock()
+		defer n.searchRequestWaitList.lock.RUnlock()
+
+		if _, ok := n.searchRequestWaitList.list[searchReplyMsg.RequestID]; ok {
+			n.searchRequestWaitList.list[searchReplyMsg.RequestID] <- searchReplyMsg.Responses
+		} else {
+			return xerrors.Errorf("no awaiting search request with this id")
+		}
+		return nil
+	}
+}
+
+func (n *node) processSearchRequestMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+		searchRequestMsg, castOk := msg.(*types.SearchRequestMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not search request")
+		}
+
+		//avoid duplicates
+		for _, requestId := range n.processedSearchRequest {
+			if requestId == searchRequestMsg.RequestID {
+				return nil
+			}
+		}
+		n.processedSearchRequest = append(n.processedSearchRequest, searchRequestMsg.RequestID)
+		pattern := searchRequestMsg.Pattern
+		budget := searchRequestMsg.Budget
+		origin := searchRequestMsg.Origin
+		requestId := searchRequestMsg.RequestID
+
+		fileInfos, err := n.relaySearchRequestMessage([]string{n.address, pkt.Header.Source, pkt.Header.RelayedBy}, pattern, budget, requestId, origin)
+		if err != nil {
+			return err
+		}
+
+		searchReplyMsg := types.SearchReplyMessage{RequestID: requestId, Responses: fileInfos}
+		buf, err := json.Marshal(searchReplyMsg)
+		if err != nil {
+			return err
+		}
+		searchReplyTrsptMsg := transport.Message{Type: types.SearchReplyMessage{}.Name(), Payload: buf}
+		n.Unicast(pkt.Header.Source, searchReplyTrsptMsg)
+
+		return nil
+	}
 }
