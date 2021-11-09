@@ -11,6 +11,7 @@ import (
 	"math"
 	"math/rand"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -415,6 +416,7 @@ func (n *node) ProcessPacket(header *transport.Header, msg *transport.Message) e
 
 //====================================================HW2==========================================================================================
 
+//Clean up, if time
 func (n *node) Upload(data io.Reader) (metahash string, err error) {
 
 	bytesBuf := new(bytes.Buffer)
@@ -425,7 +427,11 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 	nbChunks := (len(buf) / int(n.conf.ChunkSize))
 
 	var metaFileValue []byte
+	metaFileValueStep := ""
 	for i := 0; i < nbChunks; i++ {
+		if i != 0 {
+			metaFileValueStep += peer.MetafileSep
+		}
 		idx := i * int(n.conf.ChunkSize)
 		chunk := buf[idx : idx+int(n.conf.ChunkSize)]
 		h := crypto.SHA256.New()
@@ -434,25 +440,25 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 			return "", err
 		}
 		sha256Chunk := h.Sum(nil)
-		log.Print(sha256Chunk)
 		metaFileValue = append(metaFileValue, sha256Chunk...)
+		metaFileValueStep += hex.EncodeToString(sha256Chunk)
 		metahashHex := hex.EncodeToString(sha256Chunk)
-		log.Print("storing")
 		blobStore.Set(metahashHex, chunk)
 	}
 	//compute last smaller chunk
 	if len(buf)%int(n.conf.ChunkSize) != 0 {
+		//metaFileValue = append(metaFileValue, []byte(peer.MetafileSep)...)
 		chunk := buf[nbChunks*int(n.conf.ChunkSize):]
+		metaFileValueStep += peer.MetafileSep
 		h := crypto.SHA256.New()
 		_, err = h.Write(chunk)
 		if err != nil {
 			return "", err
 		}
 		sha256Chunk := h.Sum(nil)
-		log.Print(sha256Chunk)
 		metaFileValue = append(metaFileValue, sha256Chunk...)
+		metaFileValueStep += hex.EncodeToString(sha256Chunk)
 		metahashHex := hex.EncodeToString(sha256Chunk)
-		log.Print("storing")
 		blobStore.Set(metahashHex, chunk)
 	}
 
@@ -462,10 +468,10 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 		return "", err
 	}
 	metaFileKey := hex.EncodeToString(h.Sum(nil))
-	log.Print("storing")
-	blobStore.Set(metaFileKey, metaFileValue)
+	blobStore.Set(metaFileKey, []byte(metaFileValueStep))
 
 	return metaFileKey, nil
+
 }
 
 func (n *node) GetCatalog() peer.Catalog {
@@ -498,14 +504,11 @@ func (n *node) Download(metahash string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var splittedChunks []string
-	for i := 0; i < len(metaFileValue)/32; i++ {
-		splittedChunks = append(splittedChunks, string(metaFileValue[i:i+32]))
-	}
+	//necessary to convert into string before splitting ? How about directly splitting the array ?
+	splittedMetaFileValue := strings.Split(bytes.NewBuffer(metaFileValue).String(), peer.MetafileSep)
 
 	var combinedChunks []byte
-	for _, chunkHash := range splittedChunks {
+	for _, chunkHash := range splittedMetaFileValue {
 		chunk, err := n.downloadContentFromHash(chunkHash)
 		if err != nil {
 			return nil, err
@@ -637,12 +640,9 @@ func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern stri
 	blobStore := n.conf.Storage.GetDataBlobStore()
 	namingStore.ForEach(func(name string, metahash []byte) bool {
 		if regexp.MustCompile(pattern).MatchString(name) && blobStore.Get(string(metahash)) != nil {
-			var splittedChunks []string
-			for i := 0; i < len(metahash)/32; i++ {
-				splittedChunks = append(splittedChunks, string(metahash[i:i+32]))
-			}
+			splittedMetaFileValue := strings.Split(bytes.NewBuffer(blobStore.Get(string(metahash))).String(), peer.MetafileSep)
 			var chunks [][]byte
-			for _, chunkHash := range splittedChunks {
+			for _, chunkHash := range splittedMetaFileValue {
 				if blobStore.Get(chunkHash) != nil {
 					chunks = append(chunks, []byte(chunkHash))
 				}
