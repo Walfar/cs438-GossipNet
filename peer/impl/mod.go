@@ -36,7 +36,6 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 		routingTable:           RoutingTable{table: map[string]string{peerAddress: peerAddress}},
 		rumorLists:             RumorLists{rumorLists: map[string][]types.Rumor{peerAddress: make([]types.Rumor, 0)}},
 		ackWaitList:            AckWaitList{list: make(map[string]chan struct{})},
-		dataRequestWaitList:    DataRequestWaitList{list: make(map[string]chan []byte)},
 		searchRequestWaitList:  SearchRequestWaitList{list: make(map[string]chan []types.FileInfo)},
 		processedSearchRequest: make([]string, 0),
 		nbRunningRoutines:      0,
@@ -613,36 +612,55 @@ func (n *node) Resolve(name string) (metahash string) {
 }
 
 func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) (names []string, err error) {
-
-	fileInfos, err := n.relaySearchRequestMessage([]string{n.address}, reg.String(), budget, xid.New().String(), n.address)
+	requestId := xid.New().String()
+	println(requestId)
+	fileInfosChan := make(chan []types.FileInfo)
+	n.searchRequestWaitList.addEntry(requestId, fileInfosChan)
+	fileInfos, err := n.relaySearchRequestMessage([]string{n.address}, reg.String(), budget, requestId, n.address)
 	if err != nil {
 		return nil, err
 	}
-
 	for _, fileInfo := range fileInfos {
 		namingStore := n.conf.Storage.GetNamingStore()
 		namingStore.Set(fileInfo.Name, []byte(fileInfo.Metahash))
 		names = append(names, fileInfo.Name)
 	}
 
-	return names, nil
+	timer := time.NewTimer(timeout)
+
+	for {
+		select {
+		case fileInfos := <-n.searchRequestWaitList.list[requestId]:
+			println("received file infos on channel")
+			for _, fileInfo := range fileInfos {
+				namingStore := n.conf.Storage.GetNamingStore()
+				namingStore.Set(fileInfo.Name, []byte(fileInfo.Metahash))
+				names = append(names, fileInfo.Name)
+			}
+			println("finish")
+		case <-timer.C:
+			close(fileInfosChan)
+			n.searchRequestWaitList.removeEntry(requestId)
+			println("timeout")
+			return names, nil
+		}
+	}
 }
 
 func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern string, budget uint, requestId string, origin string) ([]types.FileInfo, error) {
-	replyChan := make(chan []types.FileInfo)
-	errs := make(chan error)
-
-	//neighborsToAvoid := []string{n.address, pkt.Header.RelayedBy, pkt.Header.Source}
 	var fileInfos []types.FileInfo
 	namingStore := n.conf.Storage.GetNamingStore()
 	blobStore := n.conf.Storage.GetDataBlobStore()
 	namingStore.ForEach(func(name string, metahash []byte) bool {
-		if regexp.MustCompile(pattern).MatchString(name) && blobStore.Get(string(metahash)) != nil {
+		if regexp.MustCompile(pattern).MatchString(name) && (blobStore.Get(string(metahash)) != nil || n.address == origin) {
+			println("ok")
 			splittedMetaFileValue := strings.Split(bytes.NewBuffer(blobStore.Get(string(metahash))).String(), peer.MetafileSep)
 			var chunks [][]byte
 			for _, chunkHash := range splittedMetaFileValue {
 				if blobStore.Get(chunkHash) != nil {
 					chunks = append(chunks, []byte(chunkHash))
+				} else {
+					chunks = append(chunks, nil)
 				}
 			}
 			fileInfos = append(fileInfos, types.FileInfo{Name: name, Metahash: string(metahash), Chunks: chunks})
@@ -650,62 +668,50 @@ func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern stri
 		return true
 	})
 
+	if budget == 0 {
+		return fileInfos, nil
+	}
+
 	if int(budget) <= len(n.GetRoutingTable())-1 {
+		println("budget inferior")
 		for budget != 0 {
 			neighbor := n.routingTable.ChooseRDMNeighborAddr(MakeExceptionMap(neighborsToAvoid...))
-
-			n.sendSearchRequestMessage(1, neighbor, pattern, requestId, origin)
-
-			n.waitGroup.Add(1)
-			go n.waitForSearchReply(requestId, replyChan, errs)
+			err := n.sendSearchRequestMessage(1, neighbor, pattern, requestId, origin)
+			if err != nil {
+				return fileInfos, err
+			}
 			budget--
 			neighborsToAvoid = append(neighborsToAvoid, neighbor)
-			go n.collectFileInfos(replyChan, fileInfos, neighbor)
 
 		}
-
 	} else {
+		println("budget superior")
 		i := 1
 		routingTableCopy := n.GetRoutingTable()
 		for _, neighborToAvoid := range neighborsToAvoid {
 			delete(routingTableCopy, neighborToAvoid)
 		}
+		println(len(routingTableCopy))
+		if len(routingTableCopy) == 0 {
+			return fileInfos, nil
+		}
 		for neighbor := range routingTableCopy {
+			println("sending to " + neighbor)
 			dividedBudget := math.Ceil(float64(budget) / float64(len(n.GetRoutingTable())-i))
 			budget -= uint(dividedBudget)
 			i++
-			n.sendSearchRequestMessage(budget, neighbor, pattern, requestId, origin)
-
-			n.waitGroup.Add(1)
-			go n.waitForSearchReply(requestId, replyChan, errs)
-			go n.collectFileInfos(replyChan, fileInfos, neighbor)
+			err := n.sendSearchRequestMessage(uint(dividedBudget), neighbor, pattern, requestId, origin)
+			if err != nil {
+				return fileInfos, err
+			}
 		}
 
 	}
-
-	//block until timeout
-	n.waitGroup.Wait()
-	if err := <-errs; err != nil {
-		return nil, err
-	}
-	close(replyChan)
-	close(errs)
 	return fileInfos, nil
 }
 
-func (n *node) collectFileInfos(replyChan chan []types.FileInfo, fileInfos []types.FileInfo, neighbor string) {
-	for reply := range replyChan {
-		for _, fileInfo := range reply {
-			n.catalog.lock.Lock()
-			n.catalog.catalog[fileInfo.Metahash][neighbor] = struct{}{}
-			n.catalog.lock.Unlock()
-			fileInfos = append(fileInfos, fileInfo)
-			n.waitGroup.Done()
-		}
-	}
-}
-
 func (n *node) sendSearchRequestMessage(budget uint, neighbor string, pattern string, requestID string, origin string) error {
+	println("sending search request to " + neighbor)
 	searchRequestMsg := types.SearchRequestMessage{RequestID: requestID, Origin: origin, Pattern: pattern, Budget: budget}
 	buf, err := json.Marshal(searchRequestMsg)
 	if err != nil {
@@ -717,15 +723,4 @@ func (n *node) sendSearchRequestMessage(budget uint, neighbor string, pattern st
 		return err
 	}
 	return nil
-}
-
-func (n *node) waitForSearchReply(requestID string, replyChan chan []types.FileInfo, errs chan error) {
-	requestChannel := make(chan []types.FileInfo)
-	n.searchRequestWaitList.addEntry(requestID, requestChannel)
-	for range requestChannel {
-		close(requestChannel)
-		reply := <-requestChannel
-		replyChan <- reply
-		n.searchRequestWaitList.removeEntry(requestID)
-	}
 }

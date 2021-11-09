@@ -336,10 +336,21 @@ func (n *node) processSearchReplyMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not search reply")
 		}
+		println("recevied reply from " + pkt.Header.Source)
 		n.searchRequestWaitList.lock.RLock()
 		defer n.searchRequestWaitList.lock.RUnlock()
-
+		println(searchReplyMsg.RequestID)
 		if _, ok := n.searchRequestWaitList.list[searchReplyMsg.RequestID]; ok {
+			println("it is ok %v", len(searchReplyMsg.Responses))
+			for _, fileInfo := range searchReplyMsg.Responses {
+				n.UpdateCatalog(fileInfo.Metahash, pkt.Header.Source)
+				for _, chunkMetahash := range fileInfo.Chunks {
+					if chunkMetahash != nil {
+						n.UpdateCatalog(string(chunkMetahash), pkt.Header.Source)
+					}
+				}
+			}
+			println("sending on channel ")
 			n.searchRequestWaitList.list[searchReplyMsg.RequestID] <- searchReplyMsg.Responses
 		} else {
 			return xerrors.Errorf("no awaiting search request with this id")
@@ -354,7 +365,7 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not search request")
 		}
-
+		println("recevied search request from " + pkt.Header.Source)
 		//avoid duplicates
 		for _, requestId := range n.processedSearchRequest {
 			if requestId == searchRequestMsg.RequestID {
@@ -363,7 +374,7 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		}
 		n.processedSearchRequest = append(n.processedSearchRequest, searchRequestMsg.RequestID)
 		pattern := searchRequestMsg.Pattern
-		budget := searchRequestMsg.Budget
+		budget := searchRequestMsg.Budget - 1
 		origin := searchRequestMsg.Origin
 		requestId := searchRequestMsg.RequestID
 
@@ -371,14 +382,17 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		if err != nil {
 			return err
 		}
-
+		println("sending reply")
+		for _, fileInfo := range fileInfos {
+			println(n.address + "has " + fileInfo.Name)
+		}
 		searchReplyMsg := types.SearchReplyMessage{RequestID: requestId, Responses: fileInfos}
 		buf, err := json.Marshal(searchReplyMsg)
 		if err != nil {
 			return err
 		}
 		searchReplyTrsptMsg := transport.Message{Type: types.SearchReplyMessage{}.Name(), Payload: buf}
-		n.Unicast(pkt.Header.Source, searchReplyTrsptMsg)
+		n.Unicast(searchRequestMsg.Origin, searchReplyTrsptMsg)
 
 		return nil
 	}
