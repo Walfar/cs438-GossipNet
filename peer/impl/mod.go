@@ -164,7 +164,6 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 
 	peerAddress := n.conf.Socket.GetAddress()
 	neigh := n.routingTable.getRelayAddr(dest)
-
 	if neigh == "" {
 		return xerrors.Errorf("No entry in routing table to destination %v", neigh)
 	}
@@ -427,10 +426,10 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 	nbChunks := (len(buf) / int(n.conf.ChunkSize))
 
 	var metaFileValue []byte
-	metaFileValueStep := ""
+	metaFileValueSep := ""
 	for i := 0; i < nbChunks; i++ {
 		if i != 0 {
-			metaFileValueStep += peer.MetafileSep
+			metaFileValueSep += peer.MetafileSep
 		}
 		idx := i * int(n.conf.ChunkSize)
 		chunk := buf[idx : idx+int(n.conf.ChunkSize)]
@@ -441,7 +440,7 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 		}
 		sha256Chunk := h.Sum(nil)
 		metaFileValue = append(metaFileValue, sha256Chunk...)
-		metaFileValueStep += hex.EncodeToString(sha256Chunk)
+		metaFileValueSep += hex.EncodeToString(sha256Chunk)
 		metahashHex := hex.EncodeToString(sha256Chunk)
 		blobStore.Set(metahashHex, chunk)
 	}
@@ -449,7 +448,7 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 	if len(buf)%int(n.conf.ChunkSize) != 0 {
 		//metaFileValue = append(metaFileValue, []byte(peer.MetafileSep)...)
 		chunk := buf[nbChunks*int(n.conf.ChunkSize):]
-		metaFileValueStep += peer.MetafileSep
+		metaFileValueSep += peer.MetafileSep
 		h := crypto.SHA256.New()
 		_, err = h.Write(chunk)
 		if err != nil {
@@ -457,7 +456,7 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 		}
 		sha256Chunk := h.Sum(nil)
 		metaFileValue = append(metaFileValue, sha256Chunk...)
-		metaFileValueStep += hex.EncodeToString(sha256Chunk)
+		metaFileValueSep += hex.EncodeToString(sha256Chunk)
 		metahashHex := hex.EncodeToString(sha256Chunk)
 		blobStore.Set(metahashHex, chunk)
 	}
@@ -468,7 +467,7 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 		return "", err
 	}
 	metaFileKey := hex.EncodeToString(h.Sum(nil))
-	blobStore.Set(metaFileKey, []byte(metaFileValueStep))
+	blobStore.Set(metaFileKey, []byte(metaFileValueSep))
 
 	return metaFileKey, nil
 
@@ -489,16 +488,17 @@ func (n *node) UpdateCatalog(key string, peer string) {
 	n.catalog.lock.Lock()
 	defer n.catalog.lock.Unlock()
 
+	_, ok := n.catalog.catalog[key]
+	if !ok {
+		n.catalog.catalog[key] = make(map[string]struct{})
+	}
 	(n.catalog.catalog[key])[peer] = struct{}{}
-	log.Print("added entry to catalog")
-	log.Print(n.catalog.catalog[key])
-	log.Print((n.catalog.catalog[key])[peer])
-
 }
 
 func (n *node) Download(metahash string) ([]byte, error) {
 
 	//First, get the metaFile
+
 	blobStore := n.conf.Storage.GetDataBlobStore()
 	metaFileValue, err := n.downloadContentFromHash(metahash)
 	if err != nil {
@@ -527,10 +527,10 @@ func (n *node) downloadContentFromHash(hash string) ([]byte, error) {
 	if content != nil {
 		return content, nil
 	}
-
 	requestId := xid.New().String()
 	//Else,send dataRequest to neighbor who has the file
-	for neighbor := range n.GetCatalog() {
+	targetList := n.GetCatalog()[hash]
+	for neighbor := range targetList {
 		if n.routingTable.getRelayAddr(neighbor) == "" {
 			//if not in routingTable, try another node in catalog
 			continue
@@ -547,34 +547,33 @@ func (n *node) downloadContentFromHash(hash string) ([]byte, error) {
 		}
 		errs := make(chan error)
 		chunkChan := make(chan []byte)
-		go n.waitForDataReply(requestId, neighbor, trsptMsg, errs, chunkChan)
-		if err := <-errs; err != nil {
+		go n.waitForDataReply(requestId, neighbor, trsptMsg, errs, chunkChan, n.conf.BackoffDataRequest.Initial, n.conf.BackoffDataRequest.Retry)
+		select {
+		case chunk := <-chunkChan:
+			close(chunkChan)
+			close(errs)
+			return chunk, nil
+		case err := <-errs:
+			close(chunkChan)
+			close(errs)
 			return nil, err
 		}
-		chunk := <-chunkChan
-		close(chunkChan)
-		close(errs)
-		return chunk, nil
 	}
 
 	return nil, xerrors.Errorf("could not download the chunk")
 }
 
-func (n *node) waitForDataReply(requestID string, neighbor string, trsptMsg transport.Message, errs chan error, chunkChan chan []byte) {
+func (n *node) waitForDataReply(requestID string, neighbor string, trsptMsg transport.Message, errs chan error, chunkChan chan []byte, interval time.Duration, retransmissionsLeft uint) {
 
 	requestChannel := make(chan []byte)
 	n.dataRequestWaitList.addEntry(requestID, requestChannel)
-
-	interval := n.conf.BackoffDataRequest.Initial
 	timer := time.NewTimer(interval)
-	retransmissionsLeft := n.conf.BackoffDataRequest.Retry
 
 	for {
 		select {
-		case <-requestChannel:
+		case chunk := <-requestChannel:
 			timer.Stop()
 			close(requestChannel)
-			chunk := <-requestChannel
 			if len(chunk) == 0 {
 				errs <- xerrors.Errorf("peer responded with empty value")
 				return
@@ -590,14 +589,13 @@ func (n *node) waitForDataReply(requestID string, neighbor string, trsptMsg tran
 			retransmissionsLeft--
 			//how to redefine timer ?
 			interval = interval * time.Duration(n.conf.BackoffDataRequest.Factor)
-			timer = time.NewTimer(interval)
 			//send again
 			err := n.Unicast(neighbor, trsptMsg)
 			if err != nil {
 				errs <- err
 				return
 			}
-			go n.waitForDataReply(requestID, neighbor, trsptMsg, errs, chunkChan)
+			go n.waitForDataReply(requestID, neighbor, trsptMsg, errs, chunkChan, interval, retransmissionsLeft)
 			//todo: something after ?
 		}
 	}

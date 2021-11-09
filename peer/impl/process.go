@@ -296,14 +296,13 @@ func (n *node) processDataReplyMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not data reply")
 		}
-
 		n.dataRequestWaitList.lock.RLock()
 		defer n.dataRequestWaitList.lock.RUnlock()
 
 		if _, ok := n.dataRequestWaitList.list[dataReplyMsg.RequestID]; ok {
 			n.dataRequestWaitList.list[dataReplyMsg.RequestID] <- dataReplyMsg.Value
 		} else {
-			return xerrors.Errorf("no awaiting ack with this id")
+			return xerrors.Errorf("no awaiting request with this id")
 		}
 		return nil
 	}
