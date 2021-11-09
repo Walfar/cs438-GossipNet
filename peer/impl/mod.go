@@ -161,8 +161,6 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 	if dest == "" {
 		return xerrors.Errorf("Empty destination: %v", dest)
 	}
-
-	println("unicasting from " + n.address + " to " + dest)
 	peerAddress := n.conf.Socket.GetAddress()
 	neigh := n.routingTable.getRelayAddr(dest)
 	if neigh == "" {
@@ -614,7 +612,6 @@ func (n *node) Resolve(name string) (metahash string) {
 
 func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) (names []string, err error) {
 	requestId := xid.New().String()
-	println(requestId)
 	fileInfosChan := make(chan []types.FileInfo)
 	n.searchRequestWaitList.addEntry(requestId, fileInfosChan)
 	fileInfos, err := n.relaySearchRequestMessage([]string{n.address}, reg.String(), budget, requestId, n.address)
@@ -633,21 +630,17 @@ func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) 
 }
 
 func (n *node) waitForFileInfos(timer time.Timer, fileInfosChan chan []types.FileInfo, requestId string, names []string) ([]string, error) {
-	println("next hop")
 	select {
 	case <-timer.C:
 		close(fileInfosChan)
 		n.searchRequestWaitList.removeEntry(requestId)
-		println("timeout")
 		return names, nil
 	case fileInfosList := <-n.searchRequestWaitList.list[requestId]:
-		println("received file infos on channel")
 		for _, fileInfo := range fileInfosList {
 			namingStore := n.conf.Storage.GetNamingStore()
 			namingStore.Set(fileInfo.Name, []byte(fileInfo.Metahash))
 			names = n.appendIfDoesntAlreadyContains(names, fileInfo.Name)
 		}
-		println("finish")
 		return n.waitForFileInfos(timer, fileInfosChan, requestId, names)
 	}
 }
@@ -687,7 +680,6 @@ func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern stri
 	}
 
 	if int(budget) <= len(n.GetRoutingTable())-1 {
-		println(n.address+"budget inferior, %v", budget)
 		for budget != 0 {
 			neighbor := n.routingTable.ChooseRDMNeighborAddr(MakeExceptionMap(neighborsToAvoid...))
 			if neighbor == "" {
@@ -701,18 +693,15 @@ func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern stri
 			neighborsToAvoid = append(neighborsToAvoid, neighbor)
 		}
 	} else {
-		println(n.address + " budget superior")
 		i := 1
 		routingTableCopy := n.GetRoutingTable()
 		for _, neighborToAvoid := range neighborsToAvoid {
 			delete(routingTableCopy, neighborToAvoid)
 		}
-		println(len(routingTableCopy))
 		if len(routingTableCopy) == 0 {
 			return fileInfos, nil
 		}
 		for neighbor := range routingTableCopy {
-			println("sending to " + neighbor)
 			dividedBudget := math.Ceil(float64(budget) / float64(len(n.GetRoutingTable())-i))
 			budget -= uint(dividedBudget)
 			i++
@@ -727,7 +716,6 @@ func (n *node) relaySearchRequestMessage(neighborsToAvoid []string, pattern stri
 }
 
 func (n *node) sendSearchRequestMessage(budget uint, neighbor string, pattern string, requestID string, origin string) error {
-	println("sending search request to " + neighbor)
 	searchRequestMsg := types.SearchRequestMessage{RequestID: requestID, Origin: origin, Pattern: pattern, Budget: budget}
 	buf, err := json.Marshal(searchRequestMsg)
 	if err != nil {
@@ -744,11 +732,6 @@ func (n *node) sendSearchRequestMessage(budget uint, neighbor string, pattern st
 func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name string, err error) {
 
 	filename := make(chan string)
-	requestChannel := make(chan []types.FileInfo)
-	requestId := xid.New().String()
-	n.searchRequestWaitList.addEntry(requestId, requestChannel)
-	retransmissionsLeft := conf.Retry
-	budget := conf.Initial
 
 	go func() {
 		namingStore := n.conf.Storage.GetNamingStore()
@@ -771,15 +754,25 @@ func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name
 		})
 	}()
 
+	go n.expandingRingLoop(xid.New().String(), filename, conf.Retry-1, conf, conf.Initial, pattern.String())
+	return <-filename, nil
+
+}
+
+func (n *node) expandingRingLoop(requestId string, filename chan string, retransmissionsLeft uint, conf peer.ExpandingRing, budget uint, pattern string) {
+
 	ticker := time.NewTicker(conf.Timeout)
-	go n.relaySearchRequestMessage([]string{n.address}, pattern.String(), budget, requestId, n.address)
-	retransmissionsLeft--
+	requestChannel := make(chan []types.FileInfo)
+	n.searchRequestWaitList.addEntry(requestId, requestChannel)
+
+	go n.relaySearchRequestMessage([]string{n.address}, pattern, budget, requestId, n.address)
 
 	for {
 		select {
 		case fileInfos := <-n.searchRequestWaitList.list[requestId]:
-			println("got some fileInfos")
 			for _, fileInfo := range fileInfos {
+				namingStore := n.conf.Storage.GetNamingStore()
+				namingStore.Set(fileInfo.Name, []byte(fileInfo.Metahash))
 				potentialFullKnown := true
 				for _, chunk := range fileInfo.Chunks {
 					if chunk == nil {
@@ -787,29 +780,27 @@ func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name
 					}
 				}
 				if potentialFullKnown {
-					close(filename)
-					close(requestChannel)
+					close(n.searchRequestWaitList.list[requestId])
 					n.searchRequestWaitList.removeEntry(requestId)
-					return fileInfo.Name, nil
+					filename <- fileInfo.Name
+					return
 				}
 			}
 		case <-ticker.C:
-			println("timeout, retransmissions left is %v", retransmissionsLeft)
 			if retransmissionsLeft == 0 {
-				close(filename)
-				close(requestChannel)
+				close(n.searchRequestWaitList.list[requestId])
 				n.searchRequestWaitList.removeEntry(requestId)
-				return "", nil
+				filename <- ""
+				return
 			}
-			retransmissionsLeft--
+			//retransmissionsLeft -= uint(1)
 			budget *= conf.Factor
-			go n.relaySearchRequestMessage([]string{n.address}, pattern.String(), budget, requestId, n.address)
-		case name := <-filename:
-			println("got an answer local")
-			close(filename)
-			close(requestChannel)
-			n.searchRequestWaitList.removeEntry(requestId)
-			return name, nil
+
+			otherfilename := make(chan string)
+			go n.expandingRingLoop(xid.New().String(), otherfilename, retransmissionsLeft-1, conf, budget, pattern)
+			filenameVar := <-otherfilename
+			filename <- filenameVar
+			return
 		}
 	}
 }

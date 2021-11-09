@@ -336,12 +336,9 @@ func (n *node) processSearchReplyMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not search reply")
 		}
-		println("recevied reply from " + pkt.Header.Source)
 		n.searchRequestWaitList.lock.RLock()
 		defer n.searchRequestWaitList.lock.RUnlock()
-		println(searchReplyMsg.RequestID)
 		if _, ok := n.searchRequestWaitList.list[searchReplyMsg.RequestID]; ok {
-			println("it is ok %v", len(searchReplyMsg.Responses))
 			for _, fileInfo := range searchReplyMsg.Responses {
 				n.UpdateCatalog(fileInfo.Metahash, pkt.Header.Source)
 				for _, chunkMetahash := range fileInfo.Chunks {
@@ -350,7 +347,6 @@ func (n *node) processSearchReplyMessage() registry.Exec {
 					}
 				}
 			}
-			println("sending on channel ")
 			n.searchRequestWaitList.list[searchReplyMsg.RequestID] <- searchReplyMsg.Responses
 		} else {
 			return xerrors.Errorf("no awaiting search request with this id")
@@ -365,7 +361,6 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not search request")
 		}
-		println(n.address + "recevied search request from " + pkt.Header.Source)
 		//avoid duplicates
 		for _, requestId := range n.processedSearchRequest {
 			if requestId == searchRequestMsg.RequestID {
@@ -382,23 +377,18 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		if err != nil {
 			return err
 		}
-		println(n.address + "sending reply")
-		for _, fileInfo := range fileInfos {
-			println(n.address + "has " + fileInfo.Name)
-		}
 		searchReplyMsg := types.SearchReplyMessage{RequestID: requestId, Responses: fileInfos}
 		buf, err := json.Marshal(searchReplyMsg)
 		if err != nil {
 			return err
 		}
-		println(n.address + "sending trsp msg")
 		searchReplyTrsptMsg := transport.Message{Type: types.SearchReplyMessage{}.Name(), Payload: buf}
 
 		peerAddress := n.conf.Socket.GetAddress()
 
 		header := transport.NewHeader(peerAddress, peerAddress, searchRequestMsg.Origin, 0)
 		packet := transport.Packet{Header: &header, Msg: &searchReplyTrsptMsg}
-		sendErr := n.conf.Socket.Send(searchRequestMsg.Origin, packet, n.conf.AckTimeout)
+		sendErr := n.conf.Socket.Send(pkt.Header.RelayedBy, packet, n.conf.AckTimeout)
 		if sendErr != nil {
 			return sendErr
 		}
