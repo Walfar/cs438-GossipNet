@@ -9,7 +9,6 @@ import (
 	"github.com/rs/zerolog"
 	"go.dedis.ch/cs438/gui/httpnode/types"
 	"go.dedis.ch/cs438/peer"
-
 	"go.dedis.ch/cs438/transport"
 )
 

@@ -95,7 +95,6 @@ func Test_HW0_Network_Simple(t *testing.T) {
 	require.EqualValues(t, pkt, res)
 
 	// > n1 send to n1
-
 	pkt = z.GetRandomPkt(t)
 
 	err = sock1.Send(sock1.GetAddress(), pkt, 0)
@@ -215,7 +214,6 @@ func Test_HW0_Network_Multiple(t *testing.T) {
 
 	// wait for listening node to finish
 	rcvWG.Wait()
-
 	sort.Sort(transport.ByPacketID(n1Received))
 	sort.Sort(transport.ByPacketID(n2Received))
 	sort.Sort(transport.ByPacketID(n1Sent))
@@ -416,7 +414,6 @@ func Test_HW0_Messaging_Unicast(t *testing.T) {
 			status.CheckCalled(t)
 		}
 	}
-
 	t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
@@ -457,7 +454,6 @@ func Test_HW0_Messaging_Unicast_Fail(t *testing.T) {
 			n2Ins := node2.GetIns()
 
 			// > n1 should have not received any packet
-
 			require.Len(t, n1Ins, 0)
 
 			// > n2 should have not received any packet
@@ -465,7 +461,6 @@ func Test_HW0_Messaging_Unicast_Fail(t *testing.T) {
 			require.Len(t, n2Ins, 0)
 		}
 	}
-
 	t.Run("channel transport", getTest(channelFac()))
 	t.Run("UDP transport", getTest(udpFac()))
 }
@@ -535,6 +530,7 @@ func Test_HW0_Messaging_Relaying(t *testing.T) {
 			pkt = n2Ins[0]
 
 			require.Equal(t, node3.GetAddr(), pkt.Header.Destination)
+			//require.Equal(t, node2.GetAddr(), pkt.Header.RelayedBy)
 
 			// This check is commented for the spring 2021 session because of a
 			// bug found too late on the transport implementation. See PR #47.

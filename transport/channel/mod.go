@@ -152,7 +152,7 @@ func (p *packets) add(pkt transport.Packet) {
 	p.Lock()
 	defer p.Unlock()
 
-	p.data = append(p.data, pkt.Copy())
+	p.data = append(p.data, pkt)
 }
 
 func (p *packets) getAll() []transport.Packet {

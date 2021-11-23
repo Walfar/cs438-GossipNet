@@ -23,6 +23,7 @@ const main = function () {
     application.register("dataSharing", DataSharing);
     application.register("search", Search);
     application.register("naming", Naming);
+    application.register("broadcast", Broadcast);
 
     initCollapsible();
 };
