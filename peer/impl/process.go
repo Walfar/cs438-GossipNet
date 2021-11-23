@@ -1,12 +1,14 @@
 package impl
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"math/rand"
 	"time"
 
 	"go.dedis.ch/cs438/registry"
+	"go.dedis.ch/cs438/storage"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
@@ -21,13 +23,11 @@ func (n *node) processChatMessage() registry.Exec {
 
 func (n *node) processRumorsMessage() registry.Exec {
 	return func(msg types.Message, pkt transport.Packet) error {
-
 		rumorMsg, castOk := msg.(*types.RumorsMessage)
 
 		if !castOk {
 			return xerrors.Errorf("message type is not rumor")
 		}
-
 		newData := false
 		origin := ""
 		relay := ""
@@ -406,24 +406,21 @@ func (n *node) processPaxosPrepareMessage() registry.Exec {
 			return xerrors.Errorf("message type is not paxos prepare")
 		}
 
-		println(n.address + " received a paxos prepare from " + pkt.Header.Source)
-		go func() {
-			if paxosPrepareMsg.Step == n.TLCstep && paxosPrepareMsg.ID > n.paxosMaxId {
-				paxosPromiseMsg := types.PaxosPromiseMessage{Step: paxosPrepareMsg.Step, ID: paxosPrepareMsg.ID}
-				if n.paxosAcceptedValue != nil {
-					paxosPromiseMsg.AcceptedValue = n.paxosAcceptedValue
-					paxosPromiseMsg.AcceptedID = n.paxosAcceptedId
-				}
-				buf, _ := json.Marshal(paxosPromiseMsg)
-				trsptMsg := transport.Message{Type: types.PaxosPromiseMessage{}.Name(), Payload: buf}
-				privateMsg := types.PrivateMessage{Recipients: map[string]struct{}{paxosPrepareMsg.Source: {}}, Msg: &trsptMsg}
-
-				buf, _ = json.Marshal(privateMsg)
-				broadcastMsg := transport.Message{Type: types.PrivateMessage{}.Name(), Payload: buf}
-				n.Broadcast(broadcastMsg)
-				n.paxosMaxId = paxosPrepareMsg.ID
+		if paxosPrepareMsg.Step == n.TLCstep && paxosPrepareMsg.ID > n.paxosMaxId {
+			paxosPromiseMsg := types.PaxosPromiseMessage{Step: paxosPrepareMsg.Step, ID: paxosPrepareMsg.ID}
+			if n.paxosAcceptedValue != nil {
+				paxosPromiseMsg.AcceptedValue = n.paxosAcceptedValue
+				paxosPromiseMsg.AcceptedID = n.paxosAcceptedId
 			}
-		}()
+			buf, _ := json.Marshal(paxosPromiseMsg)
+			trsptMsg := transport.Message{Type: types.PaxosPromiseMessage{}.Name(), Payload: buf}
+			privateMsg := types.PrivateMessage{Recipients: map[string]struct{}{paxosPrepareMsg.Source: {}}, Msg: &trsptMsg}
+
+			buf, _ = json.Marshal(privateMsg)
+			broadcastMsg := transport.Message{Type: types.PrivateMessage{}.Name(), Payload: buf}
+			go n.Broadcast(broadcastMsg)
+			n.paxosMaxId = paxosPrepareMsg.ID
+		}
 		return nil
 	}
 }
@@ -436,20 +433,14 @@ func (n *node) processPaxosProposeMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not paxos propose")
 		}
-		println(n.address + " received a paxos propose from " + pkt.Header.Source)
-		if paxosProposeMsg.Step == n.TLCstep && paxosProposeMsg.ID == n.paxosMaxId && pkt.Header.Source != n.address {
+		if paxosProposeMsg.Step == n.TLCstep && paxosProposeMsg.ID == n.paxosMaxId {
 			n.paxosAcceptedValue = &paxosProposeMsg.Value
 			n.paxosAcceptedId = paxosProposeMsg.ID
 			paxosAcceptMsg := types.PaxosAcceptMessage{Step: paxosProposeMsg.Step, ID: paxosProposeMsg.ID, Value: paxosProposeMsg.Value}
-			buf, err := json.Marshal(paxosAcceptMsg)
-			if err != nil {
-				return err
-			}
+			buf, _ := json.Marshal(paxosAcceptMsg)
 			trsptMsg := transport.Message{Type: types.PaxosAcceptMessage{}.Name(), Payload: buf}
-			err = n.Broadcast(trsptMsg)
-			if err != nil {
-				return err
-			}
+			go n.Broadcast(trsptMsg)
+
 		}
 		return nil
 	}
@@ -462,15 +453,10 @@ func (n *node) processPaxosPromiseMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not paxos promise")
 		}
-		println(n.address + " received a paxos promise from " + pkt.Header.Source)
 		if paxosPromiseMsg.Step == n.TLCstep && n.paxosPhase == 1 {
-			println("appending")
 			n.collectedPromises = append(n.collectedPromises, *paxosPromiseMsg)
-			println(n.conf.PaxosThreshold(n.conf.TotalPeers))
 			if len(n.collectedPromises) == n.conf.PaxosThreshold(n.conf.TotalPeers) {
-				println("sending on channel")
 				n.paxosCollectingPromisesWaitList.promisesChannels[paxosPromiseMsg.ID] <- struct{}{}
-				println("finish phase")
 				return nil
 			}
 		}
@@ -485,14 +471,56 @@ func (n *node) processPaxosAcceptMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not paxos accept")
 		}
-
 		if paxosAcceptMsg.Step == n.TLCstep && n.paxosPhase == 2 {
 			n.collectedAccepts = append(n.collectedAccepts, *paxosAcceptMsg)
-			//how to collect values ?
 			if len(n.collectedAccepts) == n.conf.PaxosThreshold(n.conf.TotalPeers) {
-				n.paxosCollectingAcceptsWaitList.acceptsChannels[paxosAcceptMsg.ID] <- struct{}{}
+				n.paxosCollectingAcceptsWaitList.acceptsChannels[paxosAcceptMsg.Value.UniqID] <- struct{}{}
 				return nil
 			}
+		}
+		return nil
+	}
+}
+
+func (n *node) processTLCMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+
+		tlcMsg, castOk := msg.(*types.TLCMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not tlc")
+		}
+
+		if tlcMsg.Step == n.TLCstep {
+			n.receivedTLCMsgs += 1
+			n.receivedTLCMsgs += uint(len(n.upcomingTLCMsgs))
+		} else if tlcMsg.Step > n.TLCstep {
+			n.upcomingTLCMsgs = append(n.upcomingTLCMsgs, *tlcMsg)
+		}
+
+		if n.conf.PaxosThreshold(n.conf.TotalPeers) <= int(n.receivedTLCMsgs) {
+			buf, _ := tlcMsg.Block.Marshal()
+			blockChain := n.conf.Storage.GetBlockchainStore()
+			blockChain.Set(hex.EncodeToString(tlcMsg.Block.Hash), buf)
+			blockChain.Set(storage.LastBlockKey, tlcMsg.Block.Hash)
+			namingStore := n.conf.Storage.GetNamingStore()
+			namingStore.Set(tlcMsg.Block.Value.Filename, []byte(tlcMsg.Block.Value.Metahash))
+
+			maxStep := n.TLCstep
+			for idx := range n.upcomingTLCMsgs {
+				tlcMsg = &n.upcomingTLCMsgs[idx]
+				buf, _ := tlcMsg.Block.Marshal()
+				blockChain := n.conf.Storage.GetBlockchainStore()
+				blockChain.Set(hex.EncodeToString(tlcMsg.Block.Hash), buf)
+				if tlcMsg.Step >= maxStep {
+					blockChain.Set(storage.LastBlockKey, tlcMsg.Block.Hash)
+					maxStep = tlcMsg.Step
+				}
+				namingStore := n.conf.Storage.GetNamingStore()
+				namingStore.Set(tlcMsg.Block.Value.Filename, []byte(tlcMsg.Block.Value.Metahash))
+			}
+			n.upcomingTLCMsgs = make([]types.TLCMessage, 0)
+
+			n.TLCstep += 1
 		}
 		return nil
 	}

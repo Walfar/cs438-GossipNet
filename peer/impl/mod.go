@@ -11,12 +11,14 @@ import (
 	"math"
 	"math/rand"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/xid"
 	"go.dedis.ch/cs438/peer"
+	"go.dedis.ch/cs438/storage"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
@@ -39,14 +41,16 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 		dataRequestWaitList:             DataRequestWaitList{list: make(map[string]chan []byte)},
 		searchRequestWaitList:           SearchRequestWaitList{list: make(map[string]chan []types.FileInfo)},
 		paxosCollectingPromisesWaitList: PaxosCollectingPromisesWaitList{promisesChannels: make(map[uint]chan struct{})},
-		paxosCollectingAcceptsWaitList:  PaxosCollectingAcceptsWaitList{acceptsChannels: make(map[uint]chan struct{})},
+		paxosCollectingAcceptsWaitList:  PaxosCollectingAcceptsWaitList{acceptsChannels: make(map[string]chan struct{})},
 		processedSearchRequest:          make([]string, 0),
 		nbRunningRoutines:               0,
 		waitGroup:                       sync.WaitGroup{},
 		TLCstep:                         0,
 		paxosAcceptedId:                 0,
+		receivedTLCMsgs:                 0,
 		paxosMaxId:                      0,
 		paxosPhase:                      1,
+		upcomingTLCMsgs:                 make([]types.TLCMessage, 0),
 		collectedPromises:               make([]types.PaxosPromiseMessage, 0),
 		collectedAccepts:                make([]types.PaxosAcceptMessage, 0),
 	}
@@ -65,6 +69,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, node.processPaxosProposeMessage())
 	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, node.processPaxosAcceptMessage())
 	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, node.processPaxosPromiseMessage())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, node.processTLCMessage())
 
 	return &node
 
@@ -91,6 +96,8 @@ type node struct {
 	nbRunningRoutines uint
 	waitGroup         sync.WaitGroup
 
+	upcomingTLCMsgs    []types.TLCMessage
+	receivedTLCMsgs    uint
 	TLCstep            uint
 	paxosMaxId         uint
 	paxosAcceptedId    uint
@@ -282,9 +289,8 @@ func (n *node) Broadcast(msg transport.Message) error {
 	if sendErr != nil {
 		return sendErr
 	}
-	//Why not launch goroutine ?
-	go n.waitForAck(ackID, rumorsArray, randomNeighAddr)
 
+	go n.waitForAck(ackID, rumorsArray, randomNeighAddr)
 	return nil
 
 }
@@ -359,7 +365,6 @@ func (n *node) SendStatusMessage(address string) error {
 }
 
 func (n *node) SendRumorMsg(address string, rumors []types.Rumor) (string, error) {
-
 	header := transport.NewHeader(n.address, n.address, address, 0)
 	msg := types.RumorsMessage{Rumors: rumors}
 
@@ -374,7 +379,6 @@ func (n *node) SendRumorMsg(address string, rumors []types.Rumor) (string, error
 	}
 
 	sendErr := n.conf.Socket.Send(address, pkt, n.conf.AckTimeout)
-
 	return header.PacketID, sendErr
 
 }
@@ -828,27 +832,32 @@ func (n *node) expandingRingLoop(requestId string, filename chan string, retrans
 
 func (n *node) Tag(name string, mh string) error {
 
-	err := n.paxosAlgorithm(name, mh, 0, n.conf.PaxosID)
-	if err != nil {
-		return nil
-	}
-	/*
+	if n.conf.TotalPeers <= 1 {
 		namingStore := n.conf.Storage.GetNamingStore()
 		namingStore.Set(name, []byte(mh))
-	*/
+		return nil
+	} else {
+		if n.conf.Storage.GetNamingStore().Get(name) != nil {
+			return xerrors.Errorf("name already exists in storage")
+		}
+
+		err := n.paxosAlgorithm(name, mh, 0, n.conf.PaxosID)
+		if err != nil {
+			return err
+		}
+
+	}
+
 	return nil
 }
 
 func (n *node) paxosAlgorithm(name string, mh string, step uint, id uint) error {
 	//phase 1
-	err := n.sendPaxosPrepareMessage(step, id)
-	if err != nil {
-		return err
-	}
+	n.sendPaxosPrepareMessage(step, id)
 
 	//phase 2
-	println("phase 2")
-	value := types.PaxosValue{UniqID: xid.New().String(), Filename: name, Metahash: mh}
+	uniqId := xid.New().String()
+	value := types.PaxosValue{UniqID: uniqId, Filename: name, Metahash: mh}
 	highestId := uint(0)
 	for _, promiseMsg := range n.collectedPromises {
 		if promiseMsg.AcceptedValue != nil && promiseMsg.AcceptedID > highestId {
@@ -856,43 +865,67 @@ func (n *node) paxosAlgorithm(name string, mh string, step uint, id uint) error 
 			value = *promiseMsg.AcceptedValue
 		}
 	}
-	err = n.sendPaxosProposeMessage(value, step, id, name, mh)
+	n.sendPaxosProposeMessage(value, step, id, name, mh, uniqId)
+
+	var hash []byte
+	hash = append(hash, []byte(strconv.Itoa(int(step)))...)
+	hash = append(hash, []byte(value.UniqID)...)
+	hash = append(hash, []byte(value.Filename)...)
+	hash = append(hash, []byte(value.Metahash)...)
+	var prevhash []byte
+	if step != 0 {
+		blockChain := n.conf.Storage.GetBlockchainStore()
+		buf := blockChain.Get(hex.EncodeToString(blockChain.Get(storage.LastBlockKey)))
+		var block types.BlockchainBlock
+		err := block.Unmarshal(buf)
+		if err != nil {
+			return err
+		}
+		prevhash = block.Hash
+	} else {
+		for i := 0; i < 4; i++ {
+			prevhash = append(prevhash, 0)
+		}
+	}
+	hash = append(hash, prevhash...)
+	h := crypto.SHA256.New()
+	_, err := h.Write(hash)
 	if err != nil {
 		return err
 	}
+	hash = h.Sum(nil)
+
+	block := types.BlockchainBlock{Index: step, Hash: hash, Value: value, PrevHash: prevhash}
+	tlcMsg := types.TLCMessage{Step: step, Block: block}
+	buf, _ := json.Marshal(tlcMsg)
+	trsptMsg := transport.Message{Type: types.TLCMessage{}.Name(), Payload: buf}
+	n.Broadcast(trsptMsg)
+
+	n.collectedAccepts = make([]types.PaxosAcceptMessage, 0)
+	n.collectedPromises = make([]types.PaxosPromiseMessage, 0)
 
 	return nil
 }
 
 func (n *node) sendPaxosPrepareMessage(step uint, id uint) error {
-	println("send prepare")
 	paxosPrepareMsg := types.PaxosPrepareMessage{Step: step, ID: id, Source: n.address}
 	buf, err := json.Marshal(paxosPrepareMsg)
 	if err != nil {
 		return err
 	}
 	trsptMsg := transport.Message{Type: types.PaxosPrepareMessage{}.Name(), Payload: buf}
-	err = n.Broadcast(trsptMsg)
-	if err != nil {
-		return err
-	}
+	n.Broadcast(trsptMsg)
 
 	//wait for promises
 	finishPaxosPhaseChan := make(chan struct{})
 	n.paxosCollectingPromisesWaitList.addEntry(id, finishPaxosPhaseChan)
 	timer := time.NewTimer(n.conf.PaxosProposerRetry)
-	println("wait for response")
 	for {
 		select {
 		case <-timer.C:
-			println("timeout")
-			err := n.sendPaxosPrepareMessage(step, id+n.conf.TotalPeers)
-			if err != nil {
-				return err
-			}
+			n.sendPaxosPrepareMessage(step, id+n.conf.TotalPeers)
 			return nil
 		case <-finishPaxosPhaseChan:
-			println("finished")
 			close(finishPaxosPhaseChan)
 			n.paxosCollectingPromisesWaitList.removeEntry(id)
 			n.paxosPhase = 2
@@ -901,21 +934,18 @@ func (n *node) sendPaxosPrepareMessage(step uint, id uint) error {
 	}
 }
 
-func (n *node) sendPaxosProposeMessage(value types.PaxosValue, step uint, id uint, name string, mh string) error {
+func (n *node) sendPaxosProposeMessage(value types.PaxosValue, step uint, id uint, name string, mh string, uniqId string) error {
 	paxosProposeMessage := types.PaxosProposeMessage{Step: step, ID: id, Value: value}
 	buf, err := json.Marshal(paxosProposeMessage)
 	if err != nil {
 		return err
 	}
 	trsptMsg := transport.Message{Type: types.PaxosProposeMessage{}.Name(), Payload: buf}
-	err = n.Broadcast(trsptMsg)
-	if err != nil {
-		return err
-	}
+	n.Broadcast(trsptMsg)
 
 	//wait for accepts
 	finishPaxosPhaseChan := make(chan struct{})
-	n.paxosCollectingAcceptsWaitList.addEntry(id, finishPaxosPhaseChan)
+	n.paxosCollectingAcceptsWaitList.addEntry(uniqId, finishPaxosPhaseChan)
 	timer := time.NewTimer(n.conf.PaxosProposerRetry)
 	for {
 		select {
@@ -928,7 +958,7 @@ func (n *node) sendPaxosProposeMessage(value types.PaxosValue, step uint, id uin
 			return nil
 		case <-finishPaxosPhaseChan:
 			close(finishPaxosPhaseChan)
-			n.paxosCollectingAcceptsWaitList.removeEntry(id)
+			n.paxosCollectingAcceptsWaitList.removeEntry(uniqId)
 			n.paxosPhase = 1
 			return nil
 		}

@@ -66,6 +66,7 @@ type PaxosCollectingPromisesWaitList struct {
 }
 
 func (a *PaxosCollectingPromisesWaitList) addEntry(id uint, collectingChan chan struct{}) {
+	println("add entry for %v", id)
 	a.lock.Lock()
 	defer a.lock.Unlock()
 	a.promisesChannels[id] = collectingChan
@@ -79,16 +80,16 @@ func (a *PaxosCollectingPromisesWaitList) removeEntry(id uint) {
 
 type PaxosCollectingAcceptsWaitList struct {
 	lock            sync.RWMutex
-	acceptsChannels map[uint]chan struct{}
+	acceptsChannels map[string]chan struct{}
 }
 
-func (a *PaxosCollectingAcceptsWaitList) addEntry(id uint, collectingChan chan struct{}) {
+func (a *PaxosCollectingAcceptsWaitList) addEntry(id string, collectingChan chan struct{}) {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 	a.acceptsChannels[id] = collectingChan
 }
 
-func (a *PaxosCollectingAcceptsWaitList) removeEntry(id uint) {
+func (a *PaxosCollectingAcceptsWaitList) removeEntry(id string) {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 	delete(a.acceptsChannels, id)
