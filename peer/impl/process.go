@@ -396,3 +396,104 @@ func (n *node) processSearchRequestMessage() registry.Exec {
 		return nil
 	}
 }
+
+func (n *node) processPaxosPrepareMessage() registry.Exec {
+
+	return func(msg types.Message, pkt transport.Packet) error {
+
+		paxosPrepareMsg, castOk := msg.(*types.PaxosPrepareMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not paxos prepare")
+		}
+
+		println(n.address + " received a paxos prepare from " + pkt.Header.Source)
+		go func() {
+			if paxosPrepareMsg.Step == n.TLCstep && paxosPrepareMsg.ID > n.paxosMaxId {
+				paxosPromiseMsg := types.PaxosPromiseMessage{Step: paxosPrepareMsg.Step, ID: paxosPrepareMsg.ID}
+				if n.paxosAcceptedValue != nil {
+					paxosPromiseMsg.AcceptedValue = n.paxosAcceptedValue
+					paxosPromiseMsg.AcceptedID = n.paxosAcceptedId
+				}
+				buf, _ := json.Marshal(paxosPromiseMsg)
+				trsptMsg := transport.Message{Type: types.PaxosPromiseMessage{}.Name(), Payload: buf}
+				privateMsg := types.PrivateMessage{Recipients: map[string]struct{}{paxosPrepareMsg.Source: {}}, Msg: &trsptMsg}
+
+				buf, _ = json.Marshal(privateMsg)
+				broadcastMsg := transport.Message{Type: types.PrivateMessage{}.Name(), Payload: buf}
+				n.Broadcast(broadcastMsg)
+				n.paxosMaxId = paxosPrepareMsg.ID
+			}
+		}()
+		return nil
+	}
+}
+
+func (n *node) processPaxosProposeMessage() registry.Exec {
+
+	return func(msg types.Message, pkt transport.Packet) error {
+
+		paxosProposeMsg, castOk := msg.(*types.PaxosProposeMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not paxos propose")
+		}
+		println(n.address + " received a paxos propose from " + pkt.Header.Source)
+		if paxosProposeMsg.Step == n.TLCstep && paxosProposeMsg.ID == n.paxosMaxId && pkt.Header.Source != n.address {
+			n.paxosAcceptedValue = &paxosProposeMsg.Value
+			n.paxosAcceptedId = paxosProposeMsg.ID
+			paxosAcceptMsg := types.PaxosAcceptMessage{Step: paxosProposeMsg.Step, ID: paxosProposeMsg.ID, Value: paxosProposeMsg.Value}
+			buf, err := json.Marshal(paxosAcceptMsg)
+			if err != nil {
+				return err
+			}
+			trsptMsg := transport.Message{Type: types.PaxosAcceptMessage{}.Name(), Payload: buf}
+			err = n.Broadcast(trsptMsg)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+func (n *node) processPaxosPromiseMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+
+		paxosPromiseMsg, castOk := msg.(*types.PaxosPromiseMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not paxos promise")
+		}
+		println(n.address + " received a paxos promise from " + pkt.Header.Source)
+		if paxosPromiseMsg.Step == n.TLCstep && n.paxosPhase == 1 {
+			println("appending")
+			n.collectedPromises = append(n.collectedPromises, *paxosPromiseMsg)
+			println(n.conf.PaxosThreshold(n.conf.TotalPeers))
+			if len(n.collectedPromises) == n.conf.PaxosThreshold(n.conf.TotalPeers) {
+				println("sending on channel")
+				n.paxosCollectingPromisesWaitList.promisesChannels[paxosPromiseMsg.ID] <- struct{}{}
+				println("finish phase")
+				return nil
+			}
+		}
+		return nil
+	}
+}
+
+func (n *node) processPaxosAcceptMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+
+		paxosAcceptMsg, castOk := msg.(*types.PaxosAcceptMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not paxos accept")
+		}
+
+		if paxosAcceptMsg.Step == n.TLCstep && n.paxosPhase == 2 {
+			n.collectedAccepts = append(n.collectedAccepts, *paxosAcceptMsg)
+			//how to collect values ?
+			if len(n.collectedAccepts) == n.conf.PaxosThreshold(n.conf.TotalPeers) {
+				n.paxosCollectingAcceptsWaitList.acceptsChannels[paxosAcceptMsg.ID] <- struct{}{}
+				return nil
+			}
+		}
+		return nil
+	}
+}

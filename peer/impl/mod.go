@@ -29,18 +29,26 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	peerAddress := conf.Socket.GetAddress()
 
 	node := node{
-		conf:                   conf,
-		address:                peerAddress,
-		stop:                   make(chan struct{}, 3),
-		catalog:                Catalog{catalog: make(map[string]map[string]struct{})},
-		routingTable:           RoutingTable{table: map[string]string{peerAddress: peerAddress}},
-		rumorLists:             RumorLists{rumorLists: map[string][]types.Rumor{peerAddress: make([]types.Rumor, 0)}},
-		ackWaitList:            AckWaitList{list: make(map[string]chan struct{})},
-		dataRequestWaitList:    DataRequestWaitList{list: make(map[string]chan []byte)},
-		searchRequestWaitList:  SearchRequestWaitList{list: make(map[string]chan []types.FileInfo)},
-		processedSearchRequest: make([]string, 0),
-		nbRunningRoutines:      0,
-		waitGroup:              sync.WaitGroup{},
+		conf:                            conf,
+		address:                         peerAddress,
+		stop:                            make(chan struct{}, 3),
+		catalog:                         Catalog{catalog: make(map[string]map[string]struct{})},
+		routingTable:                    RoutingTable{table: map[string]string{peerAddress: peerAddress}},
+		rumorLists:                      RumorLists{rumorLists: map[string][]types.Rumor{peerAddress: make([]types.Rumor, 0)}},
+		ackWaitList:                     AckWaitList{list: make(map[string]chan struct{})},
+		dataRequestWaitList:             DataRequestWaitList{list: make(map[string]chan []byte)},
+		searchRequestWaitList:           SearchRequestWaitList{list: make(map[string]chan []types.FileInfo)},
+		paxosCollectingPromisesWaitList: PaxosCollectingPromisesWaitList{promisesChannels: make(map[uint]chan struct{})},
+		paxosCollectingAcceptsWaitList:  PaxosCollectingAcceptsWaitList{acceptsChannels: make(map[uint]chan struct{})},
+		processedSearchRequest:          make([]string, 0),
+		nbRunningRoutines:               0,
+		waitGroup:                       sync.WaitGroup{},
+		TLCstep:                         0,
+		paxosAcceptedId:                 0,
+		paxosMaxId:                      0,
+		paxosPhase:                      1,
+		collectedPromises:               make([]types.PaxosPromiseMessage, 0),
+		collectedAccepts:                make([]types.PaxosAcceptMessage, 0),
 	}
 
 	node.conf.MessageRegistry.RegisterMessageCallback(types.AckMessage{}, node.processAckMessage())
@@ -53,6 +61,10 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.conf.MessageRegistry.RegisterMessageCallback(types.DataRequestMessage{}, node.processDataRequestMessage())
 	node.conf.MessageRegistry.RegisterMessageCallback(types.SearchRequestMessage{}, node.processSearchRequestMessage())
 	node.conf.MessageRegistry.RegisterMessageCallback(types.SearchReplyMessage{}, node.processSearchReplyMessage())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPrepareMessage{}, node.processPaxosPrepareMessage())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, node.processPaxosProposeMessage())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, node.processPaxosAcceptMessage())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, node.processPaxosPromiseMessage())
 
 	return &node
 
@@ -64,18 +76,31 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 type node struct {
 	peer.Peer
 	// You probably want to keep the peer.Configuration on this struct:
-	conf                   peer.Configuration
-	stop                   chan struct{}
-	catalog                Catalog
-	routingTable           RoutingTable
-	address                string
-	rumorLists             RumorLists
+	conf         peer.Configuration
+	stop         chan struct{}
+	catalog      Catalog
+	routingTable RoutingTable
+	address      string
+	rumorLists   RumorLists
+
 	ackWaitList            AckWaitList
 	dataRequestWaitList    DataRequestWaitList
 	searchRequestWaitList  SearchRequestWaitList
 	processedSearchRequest []string
-	nbRunningRoutines      uint
-	waitGroup              sync.WaitGroup
+
+	nbRunningRoutines uint
+	waitGroup         sync.WaitGroup
+
+	TLCstep            uint
+	paxosMaxId         uint
+	paxosAcceptedId    uint
+	paxosAcceptedValue *types.PaxosValue
+	paxosPhase         uint
+	collectedPromises  []types.PaxosPromiseMessage
+	collectedAccepts   []types.PaxosAcceptMessage
+
+	paxosCollectingPromisesWaitList PaxosCollectingPromisesWaitList
+	paxosCollectingAcceptsWaitList  PaxosCollectingAcceptsWaitList
 }
 
 //====================================================HW0==========================================================================================
@@ -600,12 +625,6 @@ func (n *node) waitForDataReply(requestID string, neighbor string, trsptMsg tran
 
 }
 
-func (n *node) Tag(name string, mh string) error {
-	namingStore := n.conf.Storage.GetNamingStore()
-	namingStore.Set(name, []byte(mh))
-	return nil
-}
-
 func (n *node) Resolve(name string) (metahash string) {
 	return bytes.NewBuffer(n.conf.Storage.GetNamingStore().Get(name)).String()
 }
@@ -801,6 +820,117 @@ func (n *node) expandingRingLoop(requestId string, filename chan string, retrans
 			filenameVar := <-otherfilename
 			filename <- filenameVar
 			return
+		}
+	}
+}
+
+//====================================================HW3==========================================================================================
+
+func (n *node) Tag(name string, mh string) error {
+
+	err := n.paxosAlgorithm(name, mh, 0, n.conf.PaxosID)
+	if err != nil {
+		return nil
+	}
+	/*
+		namingStore := n.conf.Storage.GetNamingStore()
+		namingStore.Set(name, []byte(mh))
+	*/
+	return nil
+}
+
+func (n *node) paxosAlgorithm(name string, mh string, step uint, id uint) error {
+	//phase 1
+	err := n.sendPaxosPrepareMessage(step, id)
+	if err != nil {
+		return err
+	}
+
+	//phase 2
+	println("phase 2")
+	value := types.PaxosValue{UniqID: xid.New().String(), Filename: name, Metahash: mh}
+	highestId := uint(0)
+	for _, promiseMsg := range n.collectedPromises {
+		if promiseMsg.AcceptedValue != nil && promiseMsg.AcceptedID > highestId {
+			highestId = promiseMsg.AcceptedID
+			value = *promiseMsg.AcceptedValue
+		}
+	}
+	err = n.sendPaxosProposeMessage(value, step, id, name, mh)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (n *node) sendPaxosPrepareMessage(step uint, id uint) error {
+	println("send prepare")
+	paxosPrepareMsg := types.PaxosPrepareMessage{Step: step, ID: id, Source: n.address}
+	buf, err := json.Marshal(paxosPrepareMsg)
+	if err != nil {
+		return err
+	}
+	trsptMsg := transport.Message{Type: types.PaxosPrepareMessage{}.Name(), Payload: buf}
+	err = n.Broadcast(trsptMsg)
+	if err != nil {
+		return err
+	}
+
+	//wait for promises
+	finishPaxosPhaseChan := make(chan struct{})
+	n.paxosCollectingPromisesWaitList.addEntry(id, finishPaxosPhaseChan)
+	timer := time.NewTimer(n.conf.PaxosProposerRetry)
+	println("wait for response")
+	for {
+		select {
+		case <-timer.C:
+			println("timeout")
+			err := n.sendPaxosPrepareMessage(step, id+n.conf.TotalPeers)
+			if err != nil {
+				return err
+			}
+			return nil
+		case <-finishPaxosPhaseChan:
+			println("finished")
+			close(finishPaxosPhaseChan)
+			n.paxosCollectingPromisesWaitList.removeEntry(id)
+			n.paxosPhase = 2
+			return nil
+		}
+	}
+}
+
+func (n *node) sendPaxosProposeMessage(value types.PaxosValue, step uint, id uint, name string, mh string) error {
+	paxosProposeMessage := types.PaxosProposeMessage{Step: step, ID: id, Value: value}
+	buf, err := json.Marshal(paxosProposeMessage)
+	if err != nil {
+		return err
+	}
+	trsptMsg := transport.Message{Type: types.PaxosProposeMessage{}.Name(), Payload: buf}
+	err = n.Broadcast(trsptMsg)
+	if err != nil {
+		return err
+	}
+
+	//wait for accepts
+	finishPaxosPhaseChan := make(chan struct{})
+	n.paxosCollectingAcceptsWaitList.addEntry(id, finishPaxosPhaseChan)
+	timer := time.NewTimer(n.conf.PaxosProposerRetry)
+	for {
+		select {
+		case <-timer.C:
+			n.paxosPhase = 1
+			err := n.paxosAlgorithm(name, mh, step, id+n.conf.TotalPeers)
+			if err != nil {
+				return err
+			}
+			return nil
+		case <-finishPaxosPhaseChan:
+			close(finishPaxosPhaseChan)
+			n.paxosCollectingAcceptsWaitList.removeEntry(id)
+			n.paxosPhase = 1
+			return nil
 		}
 	}
 }

@@ -60,6 +60,40 @@ func (a *DataRequestWaitList) removeEntry(requestID string) {
 	delete(a.list, requestID)
 }
 
+type PaxosCollectingPromisesWaitList struct {
+	lock             sync.RWMutex
+	promisesChannels map[uint]chan struct{}
+}
+
+func (a *PaxosCollectingPromisesWaitList) addEntry(id uint, collectingChan chan struct{}) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	a.promisesChannels[id] = collectingChan
+}
+
+func (a *PaxosCollectingPromisesWaitList) removeEntry(id uint) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	delete(a.promisesChannels, id)
+}
+
+type PaxosCollectingAcceptsWaitList struct {
+	lock            sync.RWMutex
+	acceptsChannels map[uint]chan struct{}
+}
+
+func (a *PaxosCollectingAcceptsWaitList) addEntry(id uint, collectingChan chan struct{}) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	a.acceptsChannels[id] = collectingChan
+}
+
+func (a *PaxosCollectingAcceptsWaitList) removeEntry(id uint) {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+	delete(a.acceptsChannels, id)
+}
+
 type RumorLists struct {
 	lock       sync.Mutex
 	rumorLists map[string][]types.Rumor
