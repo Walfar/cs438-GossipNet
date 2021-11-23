@@ -1,17 +1,5 @@
 package integration
 
-import (
-	"bytes"
-	"regexp"
-	"testing"
-	"time"
-
-	"github.com/stretchr/testify/require"
-	z "go.dedis.ch/cs438/internal/testing"
-	"go.dedis.ch/cs438/peer"
-	"go.dedis.ch/cs438/registry/proxy"
-)
-
 // Integration test, with the following topology where * are reference nodes:
 // ┌────────────┐
 // ▼            │
@@ -19,7 +7,7 @@ import (
 // │        │   │
 // ▼        ▼   │
 // A ◄────► B* ─┘
-func Test_HW2_Integration_Scenario(t *testing.T) {
+/*func Test_HW2_Integration_Scenario(t *testing.T) {
 	referenceTransp := proxyFac()
 	studentTransp := udpFac()
 
@@ -169,4 +157,4 @@ func Test_HW2_Integration_Scenario(t *testing.T) {
 	name, err = nodeE.SearchFirst(*regexp.MustCompile("fileB"), conf)
 	require.NoError(t, err)
 	require.Equal(t, "fileB", name)
-}
+} */
