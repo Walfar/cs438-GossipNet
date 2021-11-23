@@ -1718,5 +1718,5 @@ func Test_HW2_Scenario(t *testing.T) {
 	}
 
 	t.Run("channel transport", getTest(channelFac()))
-	t.Run("UDP transport", getTest(udpFac()))
+	//t.Run("UDP transport", getTest(udpFac()))
 }
