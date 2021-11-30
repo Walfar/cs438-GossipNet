@@ -28,24 +28,31 @@ func (n *node) processRumorsMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not rumor")
 		}
+		println(n.address + "received rumor from " + pkt.Header.Source)
 		newData := false
 		origin := ""
 		relay := ""
 
 		for _, rumor := range rumorMsg.Rumors {
+			println("iteration")
 
 			origin = ""
 			relay = ""
 			rumorSeq := rumor.Sequence
 
 			originCounter := n.rumorLists.GetRumorSeqOf(rumor.Origin)
+			println("origin counter is %v", originCounter)
+			println("rumorSeq is %v", rumorSeq)
 
 			if originCounter != -1 {
 				//if peer exists in map
-				if uint(originCounter) == rumorSeq+1 {
+				println("!=-1")
+				if uint(originCounter)+1 == rumorSeq {
 					//if it is the next expected rumor from this peer
+					println(n.address + "process packet")
 					processErr := n.ProcessPacket(pkt.Header, rumor.Msg)
 					if processErr != nil {
+						println("process err")
 						return processErr
 					}
 
@@ -56,6 +63,7 @@ func (n *node) processRumorsMessage() registry.Exec {
 				}
 			} else {
 				if rumorSeq == 1 {
+					println("rumor seq 1")
 					//add peer to the map if first rumor received from it
 					n.rumorLists.UpdateRumorSeqOf(rumor.Origin, rumor)
 					origin = rumor.Origin
@@ -64,9 +72,11 @@ func (n *node) processRumorsMessage() registry.Exec {
 					newData = true
 
 					newPkt := transport.Packet{Header: pkt.Header, Msg: rumor.Msg}
+					println(n.address + "process packet")
 					processErr := n.conf.MessageRegistry.ProcessPacket(newPkt)
 
 					if processErr != nil {
+						println("process err")
 						return processErr
 					}
 
@@ -109,6 +119,7 @@ func (n *node) processRumorsMessage() registry.Exec {
 				pkt.Header.Destination = randomNeighAddr
 				//updated relay address to own
 				pkt.Header.RelayedBy = n.address
+				println(n.address + "sending rumor to " + randomNeighAddr)
 				sendErr := n.conf.Socket.Send(randomNeighAddr, pkt, n.conf.AckTimeout)
 				if sendErr != nil {
 					return sendErr
@@ -406,6 +417,8 @@ func (n *node) processPaxosPrepareMessage() registry.Exec {
 			return xerrors.Errorf("message type is not paxos prepare")
 		}
 
+		println(n.address + " recevied paxos prepare msg from " + pkt.Header.Source)
+
 		if paxosPrepareMsg.Step == n.TLCstep && paxosPrepareMsg.ID > n.paxosMaxId {
 			paxosPromiseMsg := types.PaxosPromiseMessage{Step: paxosPrepareMsg.Step, ID: paxosPrepareMsg.ID}
 			if n.paxosAcceptedValue != nil {
@@ -418,6 +431,7 @@ func (n *node) processPaxosPrepareMessage() registry.Exec {
 
 			buf, _ = json.Marshal(privateMsg)
 			broadcastMsg := transport.Message{Type: types.PrivateMessage{}.Name(), Payload: buf}
+			println(n.address + " sends promise to " + pkt.Header.Source)
 			go n.Broadcast(broadcastMsg)
 			n.paxosMaxId = paxosPrepareMsg.ID
 		}
@@ -433,7 +447,15 @@ func (n *node) processPaxosProposeMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not paxos propose")
 		}
+
+		println(n.address + " recevied paxos propose from " + pkt.Header.Source)
+
+		println(pkt.Header.Source+" step is %v", paxosProposeMsg.Step)
+		println(n.address+" step is %v", n.TLCstep)
+		println(pkt.Header.Source+" ID is %v", paxosProposeMsg.ID)
+		println(n.address+" ID is %v", n.paxosMaxId)
 		if paxosProposeMsg.Step == n.TLCstep && paxosProposeMsg.ID == n.paxosMaxId {
+			println(n.address + " sends accept msg to " + pkt.Header.Source)
 			n.paxosAcceptedValue = &paxosProposeMsg.Value
 			n.paxosAcceptedId = paxosProposeMsg.ID
 			paxosAcceptMsg := types.PaxosAcceptMessage{Step: paxosProposeMsg.Step, ID: paxosProposeMsg.ID, Value: paxosProposeMsg.Value}
@@ -453,6 +475,8 @@ func (n *node) processPaxosPromiseMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not paxos promise")
 		}
+
+		println(n.address + " recevied paxos promise msg from " + pkt.Header.Source)
 
 		n.paxosCollectingPromisesWaitList.lock.RLock()
 		defer n.paxosCollectingPromisesWaitList.lock.RUnlock()
@@ -476,6 +500,7 @@ func (n *node) processPaxosAcceptMessage() registry.Exec {
 			return xerrors.Errorf("message type is not paxos accept")
 		}
 
+		println(n.address + " recevied paxos accept msg from " + pkt.Header.Source)
 		n.paxosCollectingAcceptsWaitList.lock.RLock()
 		defer n.paxosCollectingAcceptsWaitList.lock.RUnlock()
 
@@ -498,6 +523,8 @@ func (n *node) processTLCMessage() registry.Exec {
 			return xerrors.Errorf("message type is not tlc")
 		}
 
+		println(n.address + " recevied TLC msg from " + pkt.Header.Source)
+		println("threshold is %v", n.conf.PaxosThreshold(n.conf.TotalPeers))
 		if tlcMsg.Step == n.TLCstep {
 			n.receivedTLCMsgs += 1
 			n.receivedTLCMsgs += uint(len(n.upcomingTLCMsgs))
@@ -505,7 +532,7 @@ func (n *node) processTLCMessage() registry.Exec {
 			n.upcomingTLCMsgs = append(n.upcomingTLCMsgs, *tlcMsg)
 		}
 
-		if n.conf.PaxosThreshold(n.conf.TotalPeers) <= int(n.receivedTLCMsgs) {
+		if n.conf.PaxosThreshold(n.conf.TotalPeers) < int(n.receivedTLCMsgs) {
 			buf, _ := tlcMsg.Block.Marshal()
 			blockChain := n.conf.Storage.GetBlockchainStore()
 			blockChain.Set(hex.EncodeToString(tlcMsg.Block.Hash), buf)
@@ -529,6 +556,14 @@ func (n *node) processTLCMessage() registry.Exec {
 			n.upcomingTLCMsgs = make([]types.TLCMessage, 0)
 
 			n.TLCstep += 1
+		}
+
+		if !n.sentTLCmsgForCurrentStep {
+			n.sentTLCmsgForCurrentStep = true
+			err := n.Broadcast(*pkt.Msg)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}

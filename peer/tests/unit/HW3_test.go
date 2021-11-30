@@ -958,6 +958,8 @@ func Test_HW3_TLC_Move_Step_Catchup(t *testing.T) {
 func Test_HW3_Tag_Paxos_Simple_Consensus(t *testing.T) {
 	transp := channel.NewTransport()
 
+	println("start")
+
 	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithTotalPeers(2), z.WithPaxosID(1))
 	defer node1.Stop()
 
@@ -982,6 +984,7 @@ func Test_HW3_Tag_Paxos_Simple_Consensus(t *testing.T) {
 	n1outs := node1.GetOuts()
 
 	// >> Rumor(1):PaxosPrepare
+	println("prepare")
 
 	msg, pkt := getRumor(t, n1outs, 1)
 	require.NotNil(t, msg)
@@ -997,6 +1000,7 @@ func Test_HW3_Tag_Paxos_Simple_Consensus(t *testing.T) {
 	require.Equal(t, node1.GetAddr(), prepare.Source)
 
 	// >> Rumor(2):Private:PaxosPromise
+	println("promise")
 
 	msg, pkt = getRumor(t, n1outs, 2)
 	require.NotNil(t, msg)
@@ -1019,6 +1023,7 @@ func Test_HW3_Tag_Paxos_Simple_Consensus(t *testing.T) {
 	require.Nil(t, promise.AcceptedValue)
 
 	// >> Rumor(3):PaxosPropose
+	println("propose")
 
 	msg, pkt = getRumor(t, n1outs, 3)
 	require.NotNil(t, msg)
@@ -1035,6 +1040,7 @@ func Test_HW3_Tag_Paxos_Simple_Consensus(t *testing.T) {
 	require.Equal(t, "b", propose.Value.Metahash)
 
 	// >> Rumor(4):PaxosAccept
+	println("accept")
 
 	msg, pkt = getRumor(t, n1outs, 4)
 	require.NotNil(t, msg)
@@ -1051,6 +1057,7 @@ func Test_HW3_Tag_Paxos_Simple_Consensus(t *testing.T) {
 	require.Equal(t, "b", accept.Value.Metahash)
 
 	// >> Rumor(5):TLC
+	println("TLC")
 
 	msg, pkt = getRumor(t, n1outs, 5)
 	require.NotNil(t, msg)
