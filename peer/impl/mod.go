@@ -923,6 +923,7 @@ func (n *node) sendPaxosPrepareMessage(step uint, id uint) error {
 	for {
 		select {
 		case <-timer.C:
+			print("time off")
 			n.sendPaxosPrepareMessage(step, id+n.conf.TotalPeers)
 			return nil
 		case <-finishPaxosPhaseChan:

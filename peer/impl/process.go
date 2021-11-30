@@ -453,6 +453,10 @@ func (n *node) processPaxosPromiseMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not paxos promise")
 		}
+
+		n.paxosCollectingPromisesWaitList.lock.RLock()
+		defer n.paxosCollectingPromisesWaitList.lock.RUnlock()
+
 		if paxosPromiseMsg.Step == n.TLCstep && n.paxosPhase == 1 {
 			n.collectedPromises = append(n.collectedPromises, *paxosPromiseMsg)
 			if len(n.collectedPromises) == n.conf.PaxosThreshold(n.conf.TotalPeers) {
@@ -471,6 +475,10 @@ func (n *node) processPaxosAcceptMessage() registry.Exec {
 		if !castOk {
 			return xerrors.Errorf("message type is not paxos accept")
 		}
+
+		n.paxosCollectingAcceptsWaitList.lock.RLock()
+		defer n.paxosCollectingAcceptsWaitList.lock.RUnlock()
+
 		if paxosAcceptMsg.Step == n.TLCstep && n.paxosPhase == 2 {
 			n.collectedAccepts = append(n.collectedAccepts, *paxosAcceptMsg)
 			if len(n.collectedAccepts) == n.conf.PaxosThreshold(n.conf.TotalPeers) {
