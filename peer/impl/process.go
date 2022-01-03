@@ -228,7 +228,7 @@ func (n *node) processPrivateMessage() registry.Exec {
 
 		privateMsg, castOk := msg.(*types.PrivateMessage)
 		if !castOk {
-			return xerrors.Errorf("message type is not rumor")
+			return xerrors.Errorf("message type is not private")
 		}
 
 		if _, ok := privateMsg.Recipients[n.address]; ok {
@@ -531,6 +531,58 @@ func (n *node) processTLCMessage() registry.Exec {
 			n.TLCstep += 1
 		}
 
+		return nil
+	}
+}
+
+//=============================================================================================================================
+
+func (n *node) processFriendRequest() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+		friendRequest, castOk := msg.(*types.FriendRequestMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not friendRequest")
+		}
+		n.friendRequestWaitList.add(pkt.Header.Source, friendRequest.PublicKey)
+		return nil
+	}
+}
+
+func (n *node) processPositiveResponse() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+		positiveResponse, castOk := msg.(*types.PositiveResponse)
+		if !castOk {
+			return xerrors.Errorf("message type is not positiveResponse")
+		}
+		n.pendingFriendRequests.remove(pkt.Header.Source)
+		n.friendsList.add(pkt.Header.Source, positiveResponse.PublicKey)
+		return nil
+	}
+}
+
+func (n *node) processNegativeResponse() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+		_, castOk := msg.(*types.NegativeResponse)
+		if !castOk {
+			return xerrors.Errorf("message type is not negativeResponse")
+		}
+		n.pendingFriendRequests.remove(pkt.Header.Source)
+		log.Print(pkt.Header.Source + " refused your friend request.")
+		return nil
+	}
+}
+
+func (n *node) processEncryptedMessage() registry.Exec {
+	return func(msg types.Message, pkt transport.Packet) error {
+		encryptedMsg, castOk := msg.(*types.EncryptedMessage)
+		if !castOk {
+			return xerrors.Errorf("message type is not encryptedMsg")
+		}
+		decryptedBytes, err := n.decryptBytes(encryptedMsg.EncryptedBytes)
+		if err != nil {
+			return err
+		}
+		log.Print(string(decryptedBytes))
 		return nil
 	}
 }

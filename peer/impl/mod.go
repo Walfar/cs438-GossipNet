@@ -3,6 +3,9 @@ package impl
 import (
 	"bytes"
 	"crypto"
+	cryptoRand "crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -54,6 +57,10 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 		collectedPromises:               make([]types.PaxosPromiseMessage, 0),
 		collectedAccepts:                make([]types.PaxosAcceptMessage, 0),
 		sentTLCmsgForCurrentStep:        false,
+
+		friendsList:           FriendsList{friendsList: make(map[string]rsa.PublicKey)},
+		friendRequestWaitList: FriendRequestWaitList{waitingList: make(map[string]rsa.PublicKey)},
+		pendingFriendRequests: PendingFriendRequests{pendingQueue: make([]string, 0)},
 	}
 
 	node.conf.MessageRegistry.RegisterMessageCallback(types.AckMessage{}, node.processAckMessage())
@@ -71,6 +78,12 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, node.processPaxosAcceptMessage())
 	node.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, node.processPaxosPromiseMessage())
 	node.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, node.processTLCMessage())
+
+	//Project registrations
+	node.conf.MessageRegistry.RegisterMessageCallback(types.FriendRequestMessage{}, node.processFriendRequest())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.PositiveResponse{}, node.processPositiveResponse())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.NegativeResponse{}, node.processNegativeResponse())
+	node.conf.MessageRegistry.RegisterMessageCallback(types.EncryptedMessage{}, node.processEncryptedMessage())
 
 	return &node
 
@@ -111,6 +124,12 @@ type node struct {
 	paxosCollectingAcceptsWaitList  PaxosCollectingAcceptsWaitList
 
 	sentTLCmsgForCurrentStep bool
+
+	friendsList           FriendsList
+	friendRequestWaitList FriendRequestWaitList
+	pendingFriendRequests PendingFriendRequests
+	publicKey             rsa.PublicKey
+	privateKey            rsa.PrivateKey
 }
 
 //====================================================HW0==========================================================================================
@@ -965,4 +984,114 @@ func (n *node) sendPaxosProposeMessage(value types.PaxosValue, step uint, id uin
 			return nil
 		}
 	}
+}
+
+//=================================== Friend request ============================================================================================
+
+func (n *node) generateKeys() error {
+	privateKey, err := rsa.GenerateKey(cryptoRand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	n.privateKey = *privateKey
+	n.publicKey = privateKey.PublicKey
+	return nil
+}
+
+func (n *node) encryptString(myString string, friendPk rsa.PublicKey) ([]byte, error) {
+	return rsa.EncryptOAEP(
+		sha256.New(),
+		cryptoRand.Reader,
+		&friendPk,
+		[]byte(myString),
+		nil)
+}
+
+func (n *node) decryptBytes(encryptedBytes []byte) ([]byte, error) {
+	return n.privateKey.Decrypt(nil, encryptedBytes, &rsa.OAEPOptions{Hash: crypto.SHA256})
+
+}
+
+func (n *node) sendFriendRequest(address string) error {
+
+	if n.friendsList.contains(address) {
+		return xerrors.Errorf("Address is already in friend list !")
+	}
+	if n.pendingFriendRequests.contains(address) {
+		return xerrors.Errorf("You are already waiting for a response  to your friend request from this address")
+	}
+
+	friendReq := types.FriendRequestMessage{PublicKey: n.publicKey}
+	buf, err := json.Marshal(friendReq)
+	if err != nil {
+		return err
+	}
+	msg := transport.Message{Type: types.FriendRequestMessage{}.Name(), Payload: buf}
+	err = n.Broadcast(msg)
+	if err != nil {
+		return err
+	}
+
+	n.pendingFriendRequests.add(address)
+	return nil
+}
+
+func (n *node) sendPrivateMessageToFriend(friend string, myString string) error {
+	if !n.friendsList.contains(friend) {
+		return xerrors.Errorf("Address is not in friend list !")
+	}
+
+	friendPk := n.friendsList.getPublicKey(friend)
+	encryptedBytes, err := n.encryptString(myString, friendPk)
+	if err != nil {
+		return err
+	}
+	encryptedMsg := types.EncryptedMessage{EncryptedBytes: encryptedBytes}
+	encryptedMsgBuf, err := json.Marshal(encryptedMsg)
+	if err != nil {
+		return err
+	}
+	msg := transport.Message{Type: types.EncryptedMessage{}.Name(), Payload: encryptedMsgBuf}
+	privateMsg := types.PrivateMessage{Recipients: map[string]struct{}{friend: {}}, Msg: &msg}
+	privateMsgBuf, err := json.Marshal(privateMsg)
+	if err != nil {
+		return err
+	}
+	trsptMsg := transport.Message{Type: types.PrivateMessage{}.Name(), Payload: privateMsgBuf}
+	err = n.Broadcast(trsptMsg)
+	return err
+}
+
+func (n *node) sendFriendRequestToUsername(name string) {
+	//TODO
+}
+
+func (n *node) acceptFriendRequest(address string) error {
+	positiveResponse := types.PositiveResponse{PublicKey: n.publicKey}
+	buf, err := json.Marshal(positiveResponse)
+	if err != nil {
+		return err
+	}
+	msg := transport.Message{Type: types.PositiveResponse{}.Name(), Payload: buf}
+	err = n.Broadcast(msg)
+	if err != nil {
+		return err
+	}
+	n.friendRequestWaitList.removeFromWaitList(address)
+	return nil
+}
+
+func (n *node) declineFriendRequest(address string) error {
+	negativeResponse := types.NegativeResponse{}
+	buf, err := json.Marshal(negativeResponse)
+	if err != nil {
+		return err
+	}
+	msg := transport.Message{Type: types.NegativeResponse{}.Name(), Payload: buf}
+	err = n.Broadcast(msg)
+	if err != nil {
+		return err
+	}
+	n.friendRequestWaitList.removeFromWaitList(address)
+	return nil
 }

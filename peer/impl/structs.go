@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"crypto/rsa"
 	"math/rand"
 	"sync"
 	"time"
@@ -228,4 +229,92 @@ func (rt *RoutingTable) ChooseRDMNeighborAddr(excepted map[string]struct{}) stri
 type Catalog struct {
 	lock    sync.RWMutex
 	catalog peer.Catalog
+}
+
+//======================================================================================================================================
+
+type FriendRequestWaitList struct {
+	lock        sync.RWMutex
+	waitingList map[string]rsa.PublicKey
+}
+
+func (friendRequestWaitList *FriendRequestWaitList) display() {
+	//TODO
+}
+
+func (friendRequestWaitList *FriendRequestWaitList) add(address string, publicKey rsa.PublicKey) {
+	friendRequestWaitList.lock.Lock()
+	defer friendRequestWaitList.lock.Unlock()
+
+	friendRequestWaitList.waitingList[address] = publicKey
+}
+
+func (friendRequestWaitList *FriendRequestWaitList) removeFromWaitList(address string) {
+	friendRequestWaitList.lock.Lock()
+	defer friendRequestWaitList.lock.Unlock()
+
+	delete(friendRequestWaitList.waitingList, address)
+}
+
+type FriendsList struct {
+	lock        sync.RWMutex
+	friendsList map[string]rsa.PublicKey
+}
+
+func (friendsList *FriendsList) contains(friend string) bool {
+	friendsList.lock.Lock()
+	defer friendsList.lock.Unlock()
+
+	if _, ok := friendsList.friendsList[friend]; ok {
+		return true
+	}
+	return false
+}
+
+func (friendsList *FriendsList) add(friend string, publicKey rsa.PublicKey) {
+	friendsList.lock.Lock()
+	defer friendsList.lock.Unlock()
+
+	friendsList.friendsList[friend] = publicKey
+}
+
+func (friendsList *FriendsList) getPublicKey(friend string) rsa.PublicKey {
+	friendsList.lock.Lock()
+	defer friendsList.lock.Unlock()
+
+	return friendsList.friendsList[friend]
+}
+
+type PendingFriendRequests struct {
+	pendingQueue []string
+}
+
+func (pendingFriendRequests *PendingFriendRequests) contains(address string) bool {
+	for _, addr := range pendingFriendRequests.pendingQueue {
+		if addr == address {
+			return true
+		}
+	}
+	return false
+}
+
+func (pendingFriendRequests *PendingFriendRequests) add(address string) {
+	pendingFriendRequests.pendingQueue = append(pendingFriendRequests.pendingQueue, address)
+}
+
+func (pendingFriendRequests *PendingFriendRequests) remove(address string) {
+	idx := -1
+	for i, addr := range pendingFriendRequests.pendingQueue {
+		if addr == address {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		return
+	}
+	pendingFriendRequests.removeByIdx(idx)
+}
+
+func (pendingFriendRequests *PendingFriendRequests) removeByIdx(idx int) {
+	pendingFriendRequests.pendingQueue = append(pendingFriendRequests.pendingQueue[:idx], pendingFriendRequests.pendingQueue[idx+1:]...)
 }
